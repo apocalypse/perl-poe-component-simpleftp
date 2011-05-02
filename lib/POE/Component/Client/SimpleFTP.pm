@@ -121,13 +121,28 @@ has local_addr => (
 
 =attr local_port
 
-The local port to bind to for all connections to the server.
+The local port to bind to for the control connection to the server. If you need to change the data connection's port, please
+change the L</local_data_port> attribute.
 
 The default is: 0 ( let the OS decide )
 
 =cut
 
 has local_port => (
+	isa => 'Int',
+	is => 'ro',
+	default => 0,
+);
+
+=attr local_data_port
+
+The local port to bind to for the data connection to the server. Must be a different port than the L</local_port> attribute!
+
+The default is: 0 ( let the OS decide )
+
+=cut
+
+has local_data_port => (
 	isa => 'Int',
 	is => 'ro',
 	default => 0,
@@ -201,20 +216,28 @@ The default is: passive
 
 ### internal attributes
 
-has socketfactory => (
+# the socketfactory/readwrite wheels for the command connection
+has cmd_sf => (
 	isa => 'Maybe[POE::Wheel::SocketFactory]',
 	is => 'rw',
 	init_arg => undef,
 );
 
-has readwrite => (
+has cmd_rw => (
 	isa => 'Maybe[POE::Wheel::ReadWrite]',
 	is => 'rw',
 	init_arg => undef,
 );
 
-has sending_command => (
-	isa => 'Maybe[Str]',
+# the socketfactory/readwrite wheels for the data connection
+has data_sf => (
+	isa => 'Maybe[POE::Wheel::SocketFactory]',
+	is => 'rw',
+	init_arg => undef,
+);
+
+has data_rw => (
+	isa => 'Maybe[POE::Wheel::ReadWrite]',
 	is => 'rw',
 	init_arg => undef,
 );
@@ -261,6 +284,14 @@ has simple_command => (
 	init_arg => undef,
 );
 
+# holds whatever data the "complex" command needs
+has complex_command => (
+	isa => 'Maybe[HashRef[Str]]',
+	is => 'rw',
+	default => sub { {} },
+	init_arg => undef,
+);
+
 # translation from posted events to ftp commands
 my %command_map = (
 	'cd'		=> "CWD",
@@ -275,9 +306,10 @@ my %command_map = (
 );
 
 # build our "simple" command handlers
-foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat type quit quote ) ) {
+foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat quit quote ) ) {
 	event $cmd => sub {
-		my( $self, $command, @args ) = @_;
+		my( $self, @args ) = @_;
+		my $command = $cmd;
 
 		# are we already sending a command?
 		if ( $self->state ne 'idle' ) {
@@ -291,11 +323,14 @@ foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat ty
 
 		# store the command we are processing then send it
 		$self->simple_command( $cmd );
-		warn "processing simple_command($cmd) - $command @args" if DEBUG;
 		$self->command( 'simple_command', $command, @args );
 		return;
 	};
 }
+
+event _child => sub {
+	return;
+};
 
 sub BUILD {
 	my $self = shift;
@@ -308,6 +343,11 @@ sub BUILD {
 			$self->_set_tls_cmd( 0 );
 			$self->_set_tls_data( 0 );
 		}
+	}
+
+	# Make sure that the local_port and local_data_port is different!
+	if ( $self->local_port == $self->local_data_port and $self->local_port != 0 ) {
+		die "Please specify different local_port and local_data_port settings!";
 	}
 
 	# Figure out who called us so we store it for events
@@ -324,7 +364,7 @@ sub START {
 
 	# set a timeout before trying to connect
 	$poe_kernel->delay( 'timeout_event' => $self->timeout );
-	$self->socketfactory( POE::Wheel::SocketFactory->new(
+	$self->cmd_sf( POE::Wheel::SocketFactory->new(
 		SocketDomain	=> AF_INET,
 		SocketType	=> SOCK_STREAM,
 		SocketProtocol	=> 'tcp',
@@ -332,12 +372,33 @@ sub START {
 		RemotePort	=> $self->remote_port,
 		BindAddr	=> $self->local_addr,
 		BindPort	=> $self->local_port,
-		SuccessEvent	=> 'sf_connected',
-		FailureEvent	=> 'sf_error'
+		SuccessEvent	=> 'cmd_sf_connected',
+		FailureEvent	=> 'cmd_sf_error'
 	) );
 
 	return;
 }
+
+event timeout_event => sub {
+	my $self = shift;
+
+	# Okay, we timed out doing something
+	if ( $self->state eq 'connect' ) {
+		# failed to connect to the server
+		$self->tell_master( 'connect_error', 'timedout' );
+
+		# nothing else to do...
+		$self->_shutdown;
+	} elsif ( $self->state eq 'complex_sf' ) {
+		# timed out waiting for the data connection
+
+		# TODO what goes here?
+	} else {
+		die "unknown state in timeout_event: " . $self->state;
+	}
+
+	return;
+};
 
 # shutdown the connection
 sub _shutdown {
@@ -346,8 +407,8 @@ sub _shutdown {
 	warn "shutdown" if DEBUG;
 
 	# destroy our wheels
-	$self->socketfactory( undef );
-	$self->readwrite( undef );
+	$self->cmd_sf( undef );
+	$self->cmd_rw( undef );
 
 	# TODO destroy the data connection wheel
 
@@ -375,30 +436,30 @@ sub yield {
 	$poe_kernel->post( $self->get_session_id, @args );
 }
 
-event sf_connected => sub {
+event cmd_sf_connected => sub {
 	my( $self, $fh, $host, $port, $id ) = @_;
 
-	warn "sf_connected" if DEBUG;
+	warn "cmd_sf_connected" if DEBUG;
 
 	# remove the timeout
 	$poe_kernel->delay( 'timeout_event' );
 
 	# convert it into a readwrite wheel
-	$self->readwrite( POE::Wheel::ReadWrite->new(
+	$self->cmd_rw( POE::Wheel::ReadWrite->new(
 		Handle	=> $fh,
 		Filter	=> POE::Filter::Line->new( Literal => EOL ),
 		Driver	=> POE::Driver::SysRW->new,
-		InputEvent	=> 'rw_input',
-		ErrorEvent	=> 'rw_error',
+		InputEvent	=> 'cmd_rw_input',
+		ErrorEvent	=> 'cmd_rw_error',
 	) );
 
 	return;
 };
 
-event sf_error => sub {
+event cmd_sf_error => sub {
 	my( $self, $operation, $errnum, $errstr, $id ) = @_;
 
-	warn "sf_error $operation $errnum $errstr" if DEBUG;
+	warn "cmd_sf_error $operation $errnum $errstr" if DEBUG;
 
 	$self->tell_master( 'connect_error', "$operation error $errnum: $errstr" );
 
@@ -408,10 +469,10 @@ event sf_error => sub {
 	return;
 };
 
-event rw_input => sub {
+event cmd_rw_input => sub {
 	my( $self, $input, $id ) = @_;
 
-	warn "rw_input(" . $self->state . "): '$input'" if DEBUG;
+	warn "cmd_rw_input(" . $self->state . "): '$input'" if DEBUG;
 
 	# parse the input according to RFC 959
 	# TODO put this code in POE::Filter::FTP or something?
@@ -463,18 +524,40 @@ event rw_input => sub {
 	return;
 };
 
-sub _ftpd_idle {
-	my( $self, $code, $input ) = @_;
+event cmd_rw_error => sub {
+	my( $self, $operation, $errnum, $errstr, $id) = @_;
 
-	die "unexpected text while we are idle: $code $input";
-}
+	warn "cmd_rw_error $operation $errnum $errstr" if DEBUG;
+
+	# TODO blah
+
+	return;
+};
+
+event put => sub {
+	my( $self, $file ) = @_;
+
+	# are we already sending a command?
+	if ( $self->state ne 'idle' ) {
+		die "Unable to send 'put' because we are processing " . $self->state;
+	}
+
+	# start the put!
+	warn "starting PUT for '$file'" if DEBUG;
+	$self->complex_command( { 'cmd' => 'put', 'file' => $file } );
+
+	# we start off by setting the TYPE
+	$self->command( 'put_type', 'TYPE', 'I' );
+
+	return;
+};
 
 # sets the state for a command and sends it over the control connection
 sub command {
 	my( $self, $state, $cmd, @args ) = @_;
 
 	# If we don't have a readwrite wheel, then we can't send anything!
-	if ( ! defined $self->readwrite ) {
+	if ( ! defined $self->cmd_rw ) {
 		die "Unable to send '$cmd' as we aren't connected!";
 	}
 
@@ -488,7 +571,13 @@ sub command {
 
 	my $cmdstr = join( ' ', $cmd, @args );
 	warn "sending command '$cmdstr'" if DEBUG;
-	$self->readwrite->put( $cmdstr );
+	$self->cmd_rw->put( $cmdstr );
+}
+
+sub _ftpd_idle {
+	my( $self, $code, $input ) = @_;
+
+	die "unexpected text while we are idle: $code $input";
 }
 
 # should be the first line of text we received from the ftpd
@@ -517,8 +606,8 @@ sub _ftpd_tls_cmd {
 
 	if ( code_success( $code ) ) {
 		# Okay, time to SSLify the connection!
-		my $socket = $self->readwrite->get_input_handle();
-		$self->readwrite( undef );
+		my $socket = $self->cmd_rw->get_input_handle();
+		$self->cmd_rw( undef );
 
 		eval { $socket = POE::Component::SSLify::Client_SSLify( $socket, 'tlsv1' ) };
 		if ( $@ ) {
@@ -526,7 +615,7 @@ sub _ftpd_tls_cmd {
 		}
 
 		# set up the rw wheel again
-		$self->readwrite( POE::Wheel::ReadWrite->new(
+		$self->cmd_rw( POE::Wheel::ReadWrite->new(
 			Handle	=> $socket,
 			Filter	=> POE::Filter::Line->new( Literal => EOL ),
 			Driver	=> POE::Driver::SysRW->new,
@@ -616,6 +705,93 @@ sub _ftpd_simple_command {
 
 	$self->state( 'idle' );
 }
+
+sub _ftpd_put_type {
+	my( $self, $code, $input ) = @_;
+
+	if ( code_success( $code ) ) {
+		# okay, we go ahead with the PASV/PORT command
+		if ( $self->connection_mode eq 'passive' ) {
+			$self->command( 'put_pasv', 'PASV' );
+		} else {
+			# Okay, create our listening socket
+			$self->create_data_connection;
+		}
+	} else {
+		$self->complex_command( undef );
+		$self->tell_master( 'put_error', $code, $input );
+		$self->state( 'idle' );
+	}
+}
+
+sub _ftpd_put_pasv {
+	my( $self, $code, $input ) = @_;
+
+	if ( code_success( $code ) ) {
+		# Got the server's data!
+		my @data = $input =~ /(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/;
+		$self->complex_command->{'ip'} = join '.', @data[0 .. 3];
+		$self->complex_command->{'port'} = $data[4]*256 + $data[5];
+
+		# Okay, create our listening socket
+		$self->create_data_connection;
+	} else {
+		$self->complex_command( undef );
+		$self->tell_master( 'put_error', $code, $input );
+		$self->state( 'idle' );
+	}
+}
+
+sub create_data_connection {
+	my $self = shift;
+
+	# we now transition to the "complex" state
+	# the "real" state is kept in $self->complex_command->{cmd}
+	$self->state( 'complex_sf' );
+
+	# the arguments to socketfactory depend on whether we are in active or passive mode
+	my %sf_args = (
+		SocketDomain	=> AF_INET,
+		SocketType	=> SOCK_STREAM,
+		SocketProtocol	=> 'tcp',
+		SuccessEvent	=> 'data_sf_connected',
+		FailureEvent	=> 'data_sf_error',
+
+		BindAddr	=> $self->local_addr,
+		BindPort	=> $self->local_data_port,
+	);
+
+	if ( $self->connection_mode eq 'passive' ) {
+		# use the ip/port we already received
+		$sf_args{ RemoteAddress } = $self->complex_command->{'ip'};
+		$sf_args{ RemotePort } = $self->complex_command->{'port'};
+	} else {
+		# enable the Reuse param so we can sanely use the same local port
+		$sf_args{ Reuse } = 1;
+	}
+
+	# create the socketfactory!
+	$poe_kernel->delay( 'timeout_event' => $self->timeout );
+	$self->data_sf( POE::Wheel::SocketFactory->new( %sf_args ) );
+}
+
+event data_sf_connected => sub {
+	my( $self, $fh, $host, $port, $id ) = @_;
+
+	warn "data_sf_connected" if DEBUG;
+
+	# kill the timeout timer
+	$poe_kernel->delay( 'timeout_event' );
+
+	# now, is this an active or passive connection?
+	if ( $self->connection_mode eq 'passive' ) {
+		# the server connected to us!
+	} else {
+		# we connected to the server!
+	}
+
+	return;
+};
 
 no MooseX::POE::SweetArgs;
 __PACKAGE__->meta->make_immutable;
