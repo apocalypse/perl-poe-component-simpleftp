@@ -761,7 +761,7 @@ event cmd_rw_input => sub {
 					die "ftpd sent invalid reply: $input";
 				} else {
 					warn "end of multi-line: '$string'\n" if DEBUG;
-					$line = $self->input_buffer . "\n" . $string;
+					$line = $self->input_buffer;
 					$self->input_buffer( '' );
 				}
 			} else {
@@ -775,7 +775,8 @@ event cmd_rw_input => sub {
 			# per the RFC, the first character should be padded by a space if needed
 			$input =~ s/^\s//;
 			warn "got multi-line input: '$input'\n" if DEBUG;
-			$self->input_buffer( $self->input_buffer . $input );
+			$self->input_buffer( $self->input_buffer . "\n" . $input );
+			return;
 		} else {
 			die "ftpd sent invalid reply: $input";
 		}
