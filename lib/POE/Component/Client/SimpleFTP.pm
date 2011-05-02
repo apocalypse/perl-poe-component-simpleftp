@@ -283,7 +283,6 @@ has data_rw => (
 {
 	use Moose::Util::TypeConstraints;
 
-	# what TYPE are we on now? A or I?
 	# it is valid until the next complex command, then we check this to see
 	# what we need to do
 	# A = ascii
@@ -320,6 +319,8 @@ has _master => (
 sub tell_master {
 	my( $self, $event, @args ) = @_;
 
+	warn "telling master about event $event\n" if DEBUG;
+
 	$poe_kernel->post( $self->_master, $event, @args );
 }
 
@@ -331,7 +332,7 @@ has state => (
 	init_arg => undef,
 	( DEBUG ? ( trigger => sub {
 		my( $self, $new, $old ) = @_;
-		warn "switching from old state($old) to new state($new)\n";
+		warn "switching from state($old) to state($new)\n";
 		return;
 	} ) : () ),
 );
@@ -343,9 +344,9 @@ has simple_command => (
 	init_arg => undef,
 );
 
-# holds whatever data the "complex" command needs
-has complex_command => (
-	isa => 'Maybe[HashRef[Str]]',
+# holds whatever data the command needs
+has command_data => (
+	isa => 'Any',
 	is => 'rw',
 	default => sub { {} },
 	init_arg => undef,
@@ -391,7 +392,9 @@ foreach my $cmd ( @simple_commands ) {
 		}
 
 		# store the command we are processing then send it
+		warn "doing simple_command($cmd) with data(" . join( ' ', @args ) . ")\n" if DEBUG;
 		$self->simple_command( $cmd );
+		$self->command_data( \@args );
 		$self->command( 'simple_command', $command, @args );
 		return;
 	};
@@ -408,10 +411,10 @@ foreach my $cmd ( @complex_commands ) {
 		}
 
 		# start doing this command!
-		warn "doing complex command($cmd) with data(" . ( defined $args[0] ? $args[0] : '' ) . ")\n" if DEBUG;
-		$self->complex_command( {} );
-		$self->complex_command->{'cmd'} = $cmd;
-		$self->complex_command->{'data'} = $args[0];
+		warn "doing complex command($cmd) with data(" . join( ' ', @args ) . ")\n" if DEBUG;
+		$self->command_data( {} );
+		$self->command_data->{'cmd'} = $cmd;
+		$self->command_data->{'data'} = \@args;
 		if ( $cmd =~ /^(?:ls|dir|list|nlst)$/ ) {
 			$self->prepare_listing;
 		} elsif ( $cmd =~ /^(?:get|put|retr|stor)$/ ) {
@@ -427,7 +430,7 @@ sub prepare_listing {
 
 	# do we need to set the TYPE?
 	if ( ! $self->_has_data_type or $self->data_type eq 'I' ) {
-		$self->complex_command->{'type'} = 'A';
+		$self->command_data->{'type'} = 'A';
 		$self->command( 'complex_type', 'TYPE', 'A' );
 	} else {
 		# Okay, proceed to start the data connection stuff
@@ -440,7 +443,7 @@ sub prepare_transfer {
 
 	# do we need to set the TYPE?
 	if ( ! $self->_has_data_type or $self->data_type eq 'A' ) {
-		$self->complex_command->{'type'} = 'I';
+		$self->command_data->{'type'} = 'I';
 		$self->command( 'complex_type', 'TYPE', 'I' );
 	} else {
 		# Okay, proceed to start the data connection stuff
@@ -541,8 +544,8 @@ sub _shutdown {
 	# destroy our wheels
 	$self->cmd_sf( undef );
 	$self->cmd_rw( undef );
-
-	# TODO destroy the data connection wheel
+	$self->data_sf( undef );
+	$self->data_rw( undef );
 
 	# remove the timeout if it exists
 	$poe_kernel->delay( 'timeout_event' );
@@ -662,7 +665,7 @@ event cmd_rw_error => sub {
 
 	warn "cmd_rw_error $operation $errnum $errstr\n" if DEBUG;
 
-	# TODO blah
+	# TODO finish this
 
 	return;
 };
@@ -678,12 +681,12 @@ sub command {
 
 	# change to the specified state, then send the args!
 	$self->state( $state );
-	$cmd = uc $cmd; # to make sure
 	if ( $cmd eq 'QUOT' ) {
 		# user-defined string, send it as-is!
 		$cmd = shift @args;
 	}
 
+	$cmd = uc $cmd; # to make sure
 	my $cmdstr = join( ' ', $cmd, @args );
 	warn "sending command '$cmdstr'\n" if DEBUG;
 	$self->cmd_rw->put( $cmdstr );
@@ -809,12 +812,19 @@ sub _ftpd_password {
 sub _ftpd_simple_command {
 	my( $self, $code, $input ) = @_;
 
-	if ( code_success( $code ) ) {
-		$self->tell_master( $self->simple_command, $code, $input );
-	} else {
-		$self->tell_master( $self->simple_command . '_error', $code, $input );
+	# special-case for quit
+	if ( $self->simple_command eq 'quit' ) {
+		$self->_shutdown;
+		return;
 	}
 
+	if ( code_success( $code ) ) {
+		$self->tell_master( $self->simple_command, $code, $input, @{ $self->command_data } );
+	} else {
+		$self->tell_master( $self->simple_command . '_error', $code, $input, @{ $self->command_data } );
+	}
+
+	$self->command_data( undef );
 	$self->state( 'idle' );
 }
 
@@ -822,11 +832,11 @@ sub _ftpd_complex_type {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
-		$self->data_type( delete $self->complex_command->{'type'} );
+		$self->data_type( delete $self->command_data->{'type'} );
 		$self->start_data_connection;
 	} else {
-		$self->tell_master( $self->complex_command->{'cmd'} . '_error', $code, $input );
-		$self->complex_command( undef );
+		# since this is a pre-data-connection error, the complex command is done
+		$self->tell_master_complex_error( $code, $input );
 		$self->state( 'idle' );
 	}
 }
@@ -837,14 +847,14 @@ sub _ftpd_complex_pasv {
 	if ( code_success( $code ) ) {
 		# Got the server's data!
 		my @data = $input =~ /(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/;
-		$self->complex_command->{'ip'} = join '.', @data[0 .. 3];
-		$self->complex_command->{'port'} = $data[4]*256 + $data[5];
+		$self->command_data->{'ip'} = join '.', @data[0 .. 3];
+		$self->command_data->{'port'} = $data[4]*256 + $data[5];
 
 		# Okay, create our listening socket
 		$self->create_data_connection;
 	} else {
-		$self->tell_master( $self->complex_command->{'cmd'} . '_error', $code, $input );
-		$self->complex_command( undef );
+		# since this is a pre-data-connection error, the complex command is done
+		$self->tell_master_complex_error( $code, $input );
 		$self->state( 'idle' );
 	}
 }
@@ -856,11 +866,8 @@ sub _ftpd_complex_port {
 		# wait for the server to connect to us
 		$self->state( 'complex_sf' );
 	} else {
-		# get rid of the socketfactory wheel
-		$self->data_sf( undef );
-
-		$self->tell_master( $self->complex_command->{'cmd'} . '_error', $code, $input );
-		$self->complex_command( undef );
+		# since this is a pre-data-connection error, the complex command is done
+		$self->tell_master_complex_error( $code, $input );
 		$self->state( 'idle' );
 	}
 }
@@ -869,7 +876,7 @@ sub create_data_connection {
 	my $self = shift;
 
 	# we now transition to the "complex" state
-	# the "real" state is kept in $self->complex_command->{cmd}
+	# the "real" state is kept in $self->command_data->{cmd}
 
 	# the arguments to socketfactory depend on whether we are in active or passive mode
 	my %sf_args = (
@@ -885,8 +892,8 @@ sub create_data_connection {
 
 	if ( $self->connection_mode eq 'passive' ) {
 		# use the ip/port we already received
-		$sf_args{ RemoteAddress } = $self->complex_command->{'ip'};
-		$sf_args{ RemotePort } = $self->complex_command->{'port'};
+		$sf_args{ RemoteAddress } = $self->command_data->{'ip'};
+		$sf_args{ RemotePort } = $self->command_data->{'port'};
 	} else {
 		# enable the Reuse param so we can sanely use the same local port
 		$sf_args{ Reuse } = 1;
@@ -898,6 +905,7 @@ sub create_data_connection {
 
 	# Now that we've created the SF, do we need to send the PORT data?
 	if ( $self->connection_mode eq 'active' ) {
+		# TODO what if SF had an error binding to the socket?
 		my $socket = $self->data_sf->getsockname;
 		my( $port, $addr ) = sockaddr_in( $socket );
 		$addr = inet_ntoa( $addr );
@@ -932,7 +940,7 @@ event data_sf_connected => sub {
 		ErrorEvent	=> 'data_rw_error',
 		FlushedEvent	=> 'data_rw_flushed',
 	);
-	if ( $self->complex_command->{'cmd'} =~ /^(?:ls|dir|list|nlst)$/ ) {
+	if ( $self->command_data->{'cmd'} =~ /^(?:ls|dir|list|nlst)$/ ) {
 		# TODO use POE::Filter::Ls or whatever?
 		$rw_args{'Filter'} = POE::Filter::Line->new( InputLiteral => EOL );
 	} else {
@@ -943,7 +951,7 @@ event data_sf_connected => sub {
 	$self->data_rw( POE::Wheel::ReadWrite->new( %rw_args ) );
 
 	# now, send the actual complex command :)
-	my $cmd = $self->complex_command->{'cmd'};
+	my $cmd = $self->command_data->{'cmd'};
 
 	# do we need to translate the command?
 	if ( exists $command_map{ $cmd } ) {
@@ -953,8 +961,8 @@ event data_sf_connected => sub {
 	}
 
 	# since the code in sub command doesn't like sending undef's we have to check it here
-	if ( defined $self->complex_command->{'data'} ) {
-		$self->command( 'complex_start', $cmd, $self->complex_command->{'data'} );
+	if ( defined $self->command_data->{'data'} ) {
+		$self->command( 'complex_start', $cmd, @{ $self->command_data->{'data'} } );
 	} else {
 		$self->command( 'complex_start', $cmd );
 	}
@@ -965,16 +973,13 @@ event data_sf_connected => sub {
 event data_sf_error => sub {
 	my( $self, $operation, $errnum, $errstr, $wheel_id ) = @_;
 
+	warn "data_sf_error: $operation $errnum $errstr\n" if DEBUG;
+
 	# some sort of error?
 	if ( $self->state eq 'complex_sf' ) {
-		# error while waiting/connecting to the server
-		$self->data_sf( undef );
-
-		$self->tell_master( $self->complex_command->{'cmd'} . '_error', "$operation error $errnum: $errstr" );
-		$self->complex_command( undef );
-		$self->state( 'idle' );
+		$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
 	} else {
-		die "unknown state in data_sf_error: " . $self->state;
+		die "unexpected data_sf_error in wrong state: " . $self->state;
 	}
 };
 
@@ -982,9 +987,71 @@ sub _ftpd_complex_start {
 	my( $self, $code, $input ) = @_;
 
 	# actually process the "start" of the command
-	# and let the master know it's ready to send/receive stuff!
+	if ( code_preliminary( $code ) ) {
+		# let the master know it's ready to send/receive stuff!
+		$self->tell_master( $self->command_data->{'cmd'} . '_connected', @{ $self->command_data->{'data'} } );
+		$self->state( 'complex_data' );
+	} elsif ( code_success( $code ) ) {
+		die "unexpected success for start of complex command: $code $input";
+	} else {
+		$self->tell_master_complex_error( $code, $input );
+	}
+}
 
-	# TODO finish this
+sub _ftpd_complex_error {
+	my( $self, $code, $input ) = @_;
+
+	# we are supposed to get some kind of error from the ftpd
+	# because something screwed up while doing the data connection
+	if ( code_failure( $code ) ) {
+		# okay, all done!
+		$self->state( 'idle' );
+		$self->command_data( undef );
+	} else {
+		die "unexpected input while in complex_error state: $code $input";
+	}
+}
+
+sub _ftpd_complex_done {
+	my( $self, $code, $input ) = @_;
+
+	# got the final result of the complex command!
+	if ( code_success( $code ) ) {
+		$self->tell_master( $self->command_data->{'cmd'}, @{ $self->command_data->{'data'} } );
+	} else {
+		$self->tell_master( $self->command_data->{'cmd'} . '_error', $code, $input, @{ $self->command_data->{'data'} } );
+	}
+
+	# clear all data for this complex command
+	$self->state( 'idle' );
+	$self->command_data( undef );
+
+	# TODO maybe we got the complex reply *before* the RW is closed?
+}
+
+sub tell_master_complex_error {
+	my( $self, $code, $error ) = @_;
+
+	# go to the error state, so we can receive whatever the ftpd wants to send to us
+	$self->state( 'complex_error' );
+
+	$self->data_sf( undef );
+	$self->data_rw( undef );
+
+	$self->tell_master( $self->command_data->{'cmd'} . '_error', $code, $error, @{ $self->command_data->{'data'} } );
+
+	# all done processing this complex command
+	$self->command_data( undef );
+}
+
+sub tell_master_complex_closed {
+	my $self = shift;
+
+	# Okay, we are done with this command!
+	$self->state( 'complex_done' );
+	$self->data_rw( undef );
+
+	$self->tell_master( $self->command_data->{'cmd'} . '_closed', @{ $self->command_data->{'data'} } );
 }
 
 event data_rw_input => sub {
@@ -992,7 +1059,13 @@ event data_rw_input => sub {
 
 	warn "data_rw_input: '$line'\n" if DEBUG;
 
-	# TODO finish this
+	# should only happen in complex state
+	if ( $self->state eq 'complex_data' ) {
+		# send it back to the master
+		$self->tell_master( $self->command_data->{'cmd'} . '_data', $line, @{ $self->command_data->{'data'} } );
+	} else {
+		die "unexpected data_rw_input in wrong state: " . $self->state;
+	}
 
 	return;
 };
@@ -1000,9 +1073,25 @@ event data_rw_input => sub {
 event data_rw_error => sub {
 	my( $self, $operation, $errnum, $errstr, $wheel_id ) = @_;
 
-	warn "data_rw_error\n" if DEBUG;
+	warn "data_rw_error: $operation $errnum $errstr\n" if DEBUG;
 
-	# TODO finish this
+	# should only happen in complex state
+	if ( $self->state eq 'complex_data' ) {
+		# Is it a normal EOF or an error?
+		if ( $operation eq "read" and $errnum == 0 ) {
+			# only in the put state is this a real error
+			if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
+				$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
+			} else {
+				# otherwise it was a listing/get which means the data stream is done
+				$self->tell_master_complex_closed;
+			}
+		} else {
+			$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
+		}
+	} else {
+		die "unexpected data_rw_error in wrong state: " . $self->state;
+	}
 
 	return;
 };
@@ -1012,7 +1101,70 @@ event data_rw_flushed => sub {
 
 	warn "data_rw_flushed\n" if DEBUG;
 
-	# TODO finish this
+	# should only happen in complex state
+	if ( $self->state eq 'complex_data' ) {
+		# This should only happen for put commands
+		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
+			$self->tell_master( $self->command_data->{'cmd'} . '_flushed', @{ $self->command_data->{'data'} } );
+		} else {
+			die "unexpected data_rw_flushed for complex command:" . $self->command_data->{'cmd'};
+		}
+	} else {
+		die "unexpected data_rw_flushed in wrong state: " . $self->state;
+	}
+
+	return;
+};
+
+event put_data => sub {
+	my( $self, $input ) = @_;
+
+	# don't print the input as it could be binary stuff
+	warn "received put_data\n" if DEBUG;
+
+	# should only happen in complex state
+	if ( $self->state eq 'complex_data' ) {
+		# This should only happen for put commands
+		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
+			# send the data to our rw wheel
+			if ( defined $self->data_rw ) {
+				$self->data_rw->put( $input );
+			} else {
+				die "put_data when we are not connected!";
+			}
+		} else {
+			die "put_data when we are not doing a STOR";
+		}
+	} else {
+		die "put_data when we are in wrong state: " . $self->state;
+	}
+
+	return;
+};
+
+event put_close => sub {
+	my $self = shift;
+
+	warn "received put_close\n" if DEBUG;
+
+	# should only happen in complex state
+	if ( $self->state eq 'complex_data' ) {
+		# This should only happen for put commands
+		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
+			# kill the rw wheel, disconnecting from the server
+			if ( defined $self->data_rw ) {
+				$self->tell_master_complex_closed;
+			} else {
+				# maybe a timing issue, server killed the connection while this event was in the queue?
+				# then the data_rw_error event would have caught this and sent the appropriate error message
+				warn "unable to put_close as wheel is gone\n" if DEBUG;
+			}
+		} else {
+			die "put_close when we are not doing a STOR";
+		}
+	} else {
+		die "put_close when we are in wrong state: " . $self->state;
+	}
 
 	return;
 };
