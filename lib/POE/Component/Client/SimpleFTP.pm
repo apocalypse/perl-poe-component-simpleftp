@@ -243,7 +243,7 @@ has _master => (
 sub tell_master {
 	my( $self, $event, @args ) = @_;
 
-	$poe_kernel->post( $self->_master, $event, $self, @args );
+	$poe_kernel->post( $self->_master, $event, @args );
 }
 
 # the internal state of the connection
@@ -279,14 +279,20 @@ foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat ty
 	event $cmd => sub {
 		my( $self, $command, @args ) = @_;
 
+		# are we already sending a command?
+		if ( $self->state ne 'idle' ) {
+			die "Unable to send '$cmd' because we are processing " . $self->state;
+		}
+
 		# do we need to translate the command?
 		if ( exists $command_map{ $cmd } ) {
 			$command = $command_map{ $cmd };
 		}
 
 		# store the command we are processing then send it
+		$self->simple_command( $cmd );
+		warn "processing simple_command($cmd) - $command @args" if DEBUG;
 		$self->command( 'simple_command', $command, @args );
-		$self->simple_command( $cmd ); # store it AFTER calling command() so it can do it's thing first
 		return;
 	};
 }
@@ -312,6 +318,8 @@ sub BUILD {
 sub START {
 	my $self = shift;
 
+	warn "starting" if DEBUG;
+
 	$poe_kernel->alias_set( $self->alias );
 
 	# set a timeout before trying to connect
@@ -334,6 +342,8 @@ sub START {
 # shutdown the connection
 sub _shutdown {
 	my $self = shift;
+
+	warn "shutdown" if DEBUG;
 
 	# destroy our wheels
 	$self->socketfactory( undef );
@@ -368,6 +378,8 @@ sub yield {
 event sf_connected => sub {
 	my( $self, $fh, $host, $port, $id ) = @_;
 
+	warn "sf_connected" if DEBUG;
+
 	# remove the timeout
 	$poe_kernel->delay( 'timeout_event' );
 
@@ -386,6 +398,8 @@ event sf_connected => sub {
 event sf_error => sub {
 	my( $self, $operation, $errnum, $errstr, $id ) = @_;
 
+	warn "sf_error $operation $errnum $errstr" if DEBUG;
+
 	$self->tell_master( 'connect_error', "$operation error $errnum: $errstr" );
 
 	# nothing else to do...
@@ -397,6 +411,8 @@ event sf_error => sub {
 event rw_input => sub {
 	my( $self, $input, $id ) = @_;
 
+	warn "rw_input(" . $self->state . "): '$input'" if DEBUG;
+
 	# parse the input according to RFC 959
 	# TODO put this code in POE::Filter::FTP or something?
 	my( $code, $line );
@@ -406,8 +422,9 @@ event rw_input => sub {
 		$string =~ s/^\s+//;
 		$string =~ s/\s+$//;
 
-		if ( defined $minus ) {
+		if ( length $minus ) {
 			# begin of multi-line reply
+			warn "begin of multi-line($code): $string" if DEBUG;
 			$self->input_buffer( $string );
 			$self->input_buffer_code( $code );
 			return;
@@ -418,10 +435,12 @@ event rw_input => sub {
 				if ( $self->input_buffer_code != $code ) {
 					die "ftpd sent invalid reply: $input";
 				} else {
+					warn "end of multi-line: $string" if DEBUG;
 					$line = $self->input_buffer . "\n" . $string;
 					$self->input_buffer( '' );
 				}
 			} else {
+				warn "got entire line($code): $string" if DEBUG;
 				$line = $string;
 			}
 		}
@@ -430,6 +449,7 @@ event rw_input => sub {
 		if ( length( $self->input_buffer ) ) {
 			# per the RFC, the first character should be padded by a space if needed
 			$input =~ s/^\s//;
+			warn "got multi-line input: $input" if DEBUG;
 			$self->input_buffer( $self->input_buffer . $input );
 		} else {
 			die "ftpd sent invalid reply: $input";
@@ -453,11 +473,6 @@ sub _ftpd_idle {
 sub command {
 	my( $self, $state, $cmd, @args ) = @_;
 
-	# are we already sending a command?
-	if ( $self->state ne 'idle' ) {
-		die "Unable to send '$cmd' because we are processing " . $self->state;
-	}
-
 	# If we don't have a readwrite wheel, then we can't send anything!
 	if ( ! defined $self->readwrite ) {
 		die "Unable to send '$cmd' as we aren't connected!";
@@ -468,11 +483,11 @@ sub command {
 	$cmd = uc $cmd; # to make sure
 	if ( $cmd eq 'QUOT' ) {
 		# user-defined string, send it as-is!
-		$self->state( 'quote' );
 		$cmd = shift @args;
 	}
 
 	my $cmdstr = join( ' ', $cmd, @args );
+	warn "sending command '$cmdstr'" if DEBUG;
 	$self->readwrite->put( $cmdstr );
 }
 
@@ -495,18 +510,6 @@ sub _ftpd_connect {
 		# send the username!
 		$self->command( 'user', 'USER', $self->username );
 	}
-}
-
-sub _ftpd_quote {
-	my( $self, $code, $input ) = @_;
-
-	if ( code_success( $code ) ) {
-		$self->tell_master( 'quote', $code, $input );
-	} else {
-		$self->tell_master( 'quote_error', $code, $input );
-	}
-
-	$self->state( 'idle' );
 }
 
 sub _ftpd_tls_cmd {
