@@ -383,6 +383,9 @@ foreach my $cmd ( @simple_commands ) {
 		my( $self, @args ) = @_;
 		my $command = $cmd;
 
+		# ignore commands if we are shutting down
+		return if $self->state eq 'shutdown';
+
 		# are we already sending a command?
 		if ( $self->state ne 'idle' ) {
 			die "Unable to send '$cmd' because we are processing " . $self->state;
@@ -407,6 +410,9 @@ foreach my $cmd ( @complex_commands ) {
 	event $cmd => sub {
 		my( $self, @args ) = @_;
 
+		# ignore commands if we are shutting down
+		return if $self->state eq 'shutdown';
+
 		# are we already sending a command?
 		if ( $self->state ne 'idle' ) {
 			die "Unable to send '$cmd' because we are processing " . $self->state;
@@ -421,6 +427,68 @@ foreach my $cmd ( @complex_commands ) {
 			$self->prepare_listing;
 		} elsif ( $cmd =~ /^(?:get|put|retr|stor)$/ ) {
 			$self->prepare_transfer;
+		}
+
+		return;
+	};
+}
+
+# build our data complex command handlers
+foreach my $cmd ( qw( put stor ) ) {
+	event "${cmd}_data" => sub {
+		my( $self, $input ) = @_;
+
+		# don't print the input as it could be binary stuff
+		warn "received ${cmd}_data\n" if DEBUG;
+
+		# ignore commands if we are shutting down
+		return if $self->state eq 'shutdown';
+
+		# should only happen in complex state
+		if ( $self->state eq 'complex_data' ) {
+			# This should only happen for put commands
+			if ( $self->command_data->{'cmd'} eq $cmd ) {
+				# send the data to our rw wheel
+				if ( defined $self->data_rw ) {
+					$self->data_rw->put( $input );
+				} else {
+					die "got ${cmd}_data when we are not connected!";
+				}
+			} else {
+				die "got ${cmd}_data when we are not doing a STOR";
+			}
+		} else {
+			die "got ${cmd}_data when we are in wrong state: " . $self->state;
+		}
+
+		return;
+	};
+
+	event "${cmd}_close" => sub {
+		my $self = shift;
+
+		warn "received ${cmd}_close\n" if DEBUG;
+
+		# ignore commands if we are shutting down
+		return if $self->state eq 'shutdown';
+
+		# should only happen in complex state
+		if ( $self->state eq 'complex_data' ) {
+			# This should only happen for put commands
+			if ( $self->command_data->{'cmd'} eq $cmd ) {
+				# kill the rw wheel, disconnecting from the server
+				if ( defined $self->data_rw ) {
+					$self->tell_master_complex_closed;
+				} else {
+					# maybe a timing issue, server killed the connection while this event was in the queue?
+					# then the data_rw_error event would have caught this and sent the appropriate error message
+					warn "unable to ${cmd}_close as wheel is gone\n" if DEBUG;
+				}
+			} else {
+				die "got ${cmd}_close when we are not doing a STOR";
+			}
+		} else {
+			die "got ${cmd}_close when we are in wrong state: " . $self->state;
 		}
 
 		return;
@@ -522,14 +590,16 @@ event timeout_event => sub {
 	# Okay, we timed out doing something
 	if ( $self->state eq 'connect' ) {
 		# failed to connect to the server
-		$self->tell_master( 'connect_error', 'timedout' );
+		$self->tell_master( 'connect_error', 0, 'timedout' );
 
 		# nothing else to do...
 		$self->_shutdown;
 	} elsif ( $self->state eq 'complex_sf' ) {
 		# timed out waiting for the data connection
 
-		# TODO what goes here?
+		# since this is a pre-data-connection error, the complex command is done
+		$self->tell_master_complex_error( 0, 'timedout' );
+		$self->state( 'idle' );
 	} else {
 		die "unknown state in timeout_event: " . $self->state;
 	}
@@ -542,6 +612,7 @@ sub _shutdown {
 	my $self = shift;
 
 	warn "shutdown\n" if DEBUG;
+	$self->state( 'shutdown' );
 
 	# destroy our wheels
 	$self->cmd_sf( undef );
@@ -667,7 +738,10 @@ event cmd_rw_error => sub {
 
 	warn "cmd_rw_error $operation $errnum $errstr\n" if DEBUG;
 
-	# TODO finish this
+	$self->tell_master( 'connect_error', 0, "$operation error $errnum: $errstr" );
+
+	# nothing else to do...
+	$self->_shutdown;
 
 	return;
 };
@@ -1129,59 +1203,6 @@ event data_rw_flushed => sub {
 		}
 	} else {
 		die "unexpected data_rw_flushed in wrong state: " . $self->state;
-	}
-
-	return;
-};
-
-event put_data => sub {
-	my( $self, $input ) = @_;
-
-	# don't print the input as it could be binary stuff
-	warn "received put_data\n" if DEBUG;
-
-	# should only happen in complex state
-	if ( $self->state eq 'complex_data' ) {
-		# This should only happen for put commands
-		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
-			# send the data to our rw wheel
-			if ( defined $self->data_rw ) {
-				$self->data_rw->put( $input );
-			} else {
-				die "put_data when we are not connected!";
-			}
-		} else {
-			die "put_data when we are not doing a STOR";
-		}
-	} else {
-		die "put_data when we are in wrong state: " . $self->state;
-	}
-
-	return;
-};
-
-event put_close => sub {
-	my $self = shift;
-
-	warn "received put_close\n" if DEBUG;
-
-	# should only happen in complex state
-	if ( $self->state eq 'complex_data' ) {
-		# This should only happen for put commands
-		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
-			# kill the rw wheel, disconnecting from the server
-			if ( defined $self->data_rw ) {
-				$self->tell_master_complex_closed;
-			} else {
-				# maybe a timing issue, server killed the connection while this event was in the queue?
-				# then the data_rw_error event would have caught this and sent the appropriate error message
-				warn "unable to put_close as wheel is gone\n" if DEBUG;
-			}
-		} else {
-			die "put_close when we are not doing a STOR";
-		}
-	} else {
-		die "put_close when we are in wrong state: " . $self->state;
 	}
 
 	return;
