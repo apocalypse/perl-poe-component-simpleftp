@@ -329,11 +329,11 @@ has state => (
 	is => 'rw',
 	default => 'connect',
 	init_arg => undef,
-	trigger => sub {
+	( DEBUG ? ( trigger => sub {
 		my( $self, $new, $old ) = @_;
-		warn "switching from old state($old) to new state($new)\n" if DEBUG;
+		warn "switching from old state($old) to new state($new)\n";
 		return;
-	},
+	} ) : () ),
 );
 
 # holds what "simple" command we are processing when state is 'simple_command'
@@ -954,10 +954,10 @@ event data_sf_connected => sub {
 
 	# since the code in sub command doesn't like sending undef's we have to check it here
 	if ( defined $self->complex_command->{'data'} ) {
-		$cmd .= " " . $self->complex_command->{'data'};
+		$self->command( 'complex_start', $cmd, $self->complex_command->{'data'} );
+	} else {
+		$self->command( 'complex_start', $cmd );
 	}
-
-	$self->command( 'complex_start', $cmd );
 
 	return;
 };
