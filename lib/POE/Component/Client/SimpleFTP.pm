@@ -294,11 +294,12 @@ has data_rw => (
 	);
 }
 
+# holds data for multi-line replies
 has input_buffer => (
-	isa => 'Str',
+	isa => 'Maybe[Str]',
 	is => 'rw',
 	init_arg => undef,
-	default => '',
+	default => undef,
 );
 
 has input_buffer_code => (
@@ -750,32 +751,35 @@ event cmd_rw_input => sub {
 		if ( length $minus ) {
 			# begin of multi-line reply
 			warn "begin of multi-line($code): '$string'\n" if DEBUG;
-			$self->input_buffer( $string );
+			$self->input_buffer( '' );
 			$self->input_buffer_code( $code );
 			return;
 		} else {
 			# end of multi-line reply?
-			if ( length( $self->input_buffer ) ) {
+			if ( defined $self->input_buffer ) {
 				# Make sure the code matches!
 				if ( $self->input_buffer_code != $code ) {
 					die "ftpd sent invalid reply: $input";
 				} else {
 					warn "end of multi-line: '$string'\n" if DEBUG;
 					$line = $self->input_buffer;
-					$self->input_buffer( '' );
+					$self->input_buffer( undef );
 				}
 			} else {
-				warn "got entire line($code): '$string'\n" if DEBUG;
 				$line = $string;
 			}
 		}
 	} else {
 		# If we are in a multi-line reply, just collect the input
-		if ( length( $self->input_buffer ) ) {
+		if ( defined $self->input_buffer ) {
 			# per the RFC, the first character should be padded by a space if needed
 			$input =~ s/^\s//;
 			warn "got multi-line input: '$input'\n" if DEBUG;
-			$self->input_buffer( $self->input_buffer . "\n" . $input );
+			if ( length( $self->input_buffer ) ) {
+				$self->input_buffer( $self->input_buffer . "\n" . $input );
+			} else {
+				$self->input_buffer( $input );
+			}
 			return;
 		} else {
 			die "ftpd sent invalid reply: $input";
