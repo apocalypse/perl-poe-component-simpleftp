@@ -85,17 +85,17 @@ event connected => sub {
 };
 
 event connect_error => sub {
-	my( $self, $code, $string ) = @_;
+	my( $self, $code, $reply ) = @_;
 
-	die "CONNECT error: $code $string";
+	die "CONNECT error: $code $reply";
 
 	return;
 };
 
 event login_error => sub {
-	my( $self, $code, $string ) = @_;
+	my( $self, $code, $reply ) = @_;
 
-	die "LOGIN error: $code $string";
+	die "LOGIN error: $code $reply";
 
 	return;
 };
@@ -110,9 +110,9 @@ event authenticated => sub {
 };
 
 event get_error => sub {
-	my( $self, $code, $string, $path ) = @_;
+	my( $self, $code, $reply, $path ) = @_;
 
-	die "get error: $code $string";
+	die "get error: $code $reply";
 
 	return;
 };
@@ -134,7 +134,7 @@ event get_data => sub {
 };
 
 event get => sub {
-	my( $self, $path ) = @_;
+	my( $self, $code, $reply, $path ) = @_;
 
 	# done with the file, we disconnect
 	$self->ftp->yield( 'quit' );

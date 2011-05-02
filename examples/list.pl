@@ -85,17 +85,17 @@ event connected => sub {
 };
 
 event connect_error => sub {
-	my( $self, $code, $string ) = @_;
+	my( $self, $code, $reply ) = @_;
 
-	die "CONNECT error: $code $string";
+	die "CONNECT error: $code $reply";
 
 	return;
 };
 
 event login_error => sub {
-	my( $self, $code, $string ) = @_;
+	my( $self, $code, $reply ) = @_;
 
-	die "LOGIN error: $code $string";
+	die "LOGIN error: $code $reply";
 
 	return;
 };
@@ -110,9 +110,9 @@ event authenticated => sub {
 };
 
 event ls_error => sub {
-	my( $self, $code, $string, $path ) = @_;
+	my( $self, $code, $reply, $path ) = @_;
 
-	die "ls error: $code $string";
+	die "ls error: $code $reply";
 
 	return;
 };
@@ -134,7 +134,7 @@ event ls_data => sub {
 };
 
 event ls => sub {
-	my( $self, $path ) = @_;
+	my( $self, $code, $reply, $path ) = @_;
 
 	# done with the listing, we disconnect
 	$self->ftp->yield( 'quit' );

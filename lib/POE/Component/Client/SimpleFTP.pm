@@ -30,13 +30,15 @@ use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 # * REST ( a bit tricky to implement, maybe later )
 # * ABOR ( tricky to implement, as it messes with state )
 # RFC 2228 commands:
-# * ADAT
-# * CCC
-# * MIC
-# * CONF
-# * ENC
+# * AUTH ( only AUTH TLS is supported now )
+# * PROT/PBSZ is supported with the default options
+# * ADAT ( not needed for AUTH TLS? )
+# * CCC ( not needed with TLS? )
+# * MIC ( not needed with TLS? )
+# * CONF ( not needed with TLS? )
+# * ENC ( not needed with TLS? )
 # RFC 2389 commands:
-# * FEAT
+# * FEAT ( no formal parser but we can send the command )
 # RFC 2640 commands:
 # * the entire thing :)
 # RFC 2773 commands:
@@ -361,6 +363,7 @@ my %command_map = (
 	'delete'	=> "DELE",
 	'quote'		=> "QUOT",
 	'disconnect'	=> "QUIT",
+	'features'	=> "FEAT",
 );
 
 my @simple_commands = ( qw(
@@ -371,6 +374,7 @@ my @simple_commands = ( qw(
 	rmd rmdir
 	quot quote
 	quit disconnect
+	feat features
 ) );
 
 my @complex_commands = ( qw(
@@ -482,7 +486,7 @@ foreach my $cmd ( qw( put stor ) ) {
 			if ( $self->command_data->{'cmd'} eq $cmd ) {
 				# kill the rw wheel, disconnecting from the server
 				if ( defined $self->data_rw ) {
-					$self->tell_master_complex_closed;
+					$self->process_complex_closed;
 				} else {
 					# maybe a timing issue, server killed the connection while this event was in the queue?
 					# then the data_rw_error event would have caught this and sent the appropriate error message
@@ -522,27 +526,26 @@ event rename => sub {
 };
 
 sub _ftpd_rename_start {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_intermediate( $code ) ) {
 		# TODO should we send a rename_partial event?
-
-		$self->command( 'rename_done', 'RNTO', $self->complex_command->{'to'} );
+		$self->command( 'rename_done', 'RNTO', $self->command_data->{'to'} );
 	} else {
-		$self->tell_master( 'rename_error', $code, $input, $self->complex_command->{'from'}, $self->complex_command->{'to'} );
+		$self->tell_master( 'rename_error', $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
 		$self->command_data( undef );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_rename_done {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
-	if ( code_success( $code ) ) {
-		$self->tell_master( 'rename', $self->complex_command->{'from'}, $self->complex_command->{'to'} );
-	} else {
-		$self->tell_master( 'rename_error', $code, $input, $self->complex_command->{'from'}, $self->complex_command->{'to'} );
+	my $event = 'rename';
+	if ( ! code_success( $code ) ) {
+		$event .= '_error';
 	}
+	$self->tell_master( $event, $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
 
 	$self->command_data( undef );
 	$self->state( 'idle' );
@@ -651,7 +654,7 @@ event timeout_event => sub {
 		# timed out waiting for the data connection
 
 		# since this is a pre-data-connection error, the complex command is done
-		$self->tell_master_complex_error( 0, 'timedout' );
+		$self->process_complex_error( 0, 'timedout' );
 		$self->state( 'idle' );
 	} else {
 		die "unknown state in timeout_event: " . $self->state;
@@ -822,18 +825,18 @@ sub command {
 }
 
 sub _ftpd_idle {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
-	die "unexpected text while we are idle: $code $input";
+	die "unexpected text while we are idle: $code $reply";
 }
 
 # should be the first line of text we received from the ftpd
 sub _ftpd_connect {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	# TODO should we parse the code for failure replies?
 
-	$self->tell_master( 'connected', $code, $input );
+	$self->tell_master( 'connected', $code, $reply );
 
 	# do we want TLS?
 	if ( $self->tls_cmd ) {
@@ -846,7 +849,7 @@ sub _ftpd_connect {
 }
 
 sub _ftpd_tls_cmd {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		# Okay, time to SSLify the connection!
@@ -871,75 +874,75 @@ sub _ftpd_tls_cmd {
 		$self->command( 'user', 'USER', $self->username );
 	} else {
 		# server probably doesn't support AUTH TLS
-		$self->tell_master( 'login_error', $code, $input );
+		$self->tell_master( 'login_error', $code, $reply );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_pbsz {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		$self->command( 'prot', 'PROT', 'P' );
 	} else {
-		$self->tell_master( 'login_error', $code, $input );
+		$self->tell_master( 'login_error', $code, $reply );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_prot {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		$self->tell_master( 'authenticated' );
 	} else {
-		$self->tell_master( 'login_error', $code, $input );
+		$self->tell_master( 'login_error', $code, $reply );
 	}
 
 	$self->state( 'idle' );
 }
 
 sub _ftpd_user {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		# no need for password ( probably anonymous account )
-
-		# do we need to setup the data channel TLS stuff?
-		if ( $self->tls_data ) {
-			$self->command( 'pbsz', 'PBSZ', 0 );
-		} else {
-			$self->tell_master( 'authenticated' );
-			$self->state( 'idle' );
-		}
+		$self->prepare_tls_stuff;
 	} elsif ( code_intermediate( $code ) ) {
 		# send the password!
 		$self->command( 'password', 'PASS', $self->password );
 	} else {
-		$self->tell_master( 'login_error', $code, $input );
+		$self->tell_master( 'login_error', $code, $reply );
+		$self->state( 'idle' );
+	}
+}
+
+sub prepare_tls_stuff {
+	my $self = shift;
+
+	# do we need to setup the data channel TLS stuff?
+	if ( $self->tls_data ) {
+		# TODO is 0 a good default?
+		$self->command( 'pbsz', 'PBSZ', 0 );
+	} else {
+		$self->tell_master( 'authenticated' );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_password {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
-		# do we need to setup the data channel TLS stuff?
-		if ( $self->tls_data ) {
-			$self->command( 'pbsz', 'PBSZ', 0 );
-		} else {
-			$self->tell_master( 'authenticated' );
-			$self->state( 'idle' );
-		}
+		$self->prepare_tls_stuff;
 	} else {
-		$self->tell_master( 'login_error', $code, $input );
+		$self->tell_master( 'login_error', $code, $reply );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_simple_command {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	# special-case for quit
 	if ( $self->simple_command =~ /^(?:quit|disconnect)$/ ) {
@@ -947,35 +950,35 @@ sub _ftpd_simple_command {
 		return;
 	}
 
-	if ( code_success( $code ) ) {
-		$self->tell_master( $self->simple_command, $code, $input, @{ $self->command_data } );
-	} else {
-		$self->tell_master( $self->simple_command . '_error', $code, $input, @{ $self->command_data } );
+	my $event = $self->simple_command;
+	if ( ! code_success( $code ) ) {
+		$event .= '_error';
 	}
+	$self->tell_master( $event, $code, $reply, @{ $self->command_data } );
 
 	$self->command_data( undef );
 	$self->state( 'idle' );
 }
 
 sub _ftpd_complex_type {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		$self->data_type( delete $self->command_data->{'type'} );
 		$self->start_data_connection;
 	} else {
 		# since this is a pre-data-connection error, the complex command is done
-		$self->tell_master_complex_error( $code, $input );
+		$self->process_complex_error( $code, $reply );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_complex_pasv {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		# Got the server's data!
-		my @data = $input =~ /(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/;
+		my @data = $reply =~ /(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/;
 		$self->command_data->{'ip'} = join '.', @data[0 .. 3];
 		$self->command_data->{'port'} = $data[4]*256 + $data[5];
 
@@ -983,20 +986,20 @@ sub _ftpd_complex_pasv {
 		$self->create_data_connection;
 	} else {
 		# since this is a pre-data-connection error, the complex command is done
-		$self->tell_master_complex_error( $code, $input );
+		$self->process_complex_error( $code, $reply );
 		$self->state( 'idle' );
 	}
 }
 
 sub _ftpd_complex_port {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
 		# wait for the server to connect to us
 		$self->state( 'complex_sf' );
 	} else {
 		# since this is a pre-data-connection error, the complex command is done
-		$self->tell_master_complex_error( $code, $input );
+		$self->process_complex_error( $code, $reply );
 		$self->state( 'idle' );
 	}
 }
@@ -1106,14 +1109,14 @@ event data_sf_error => sub {
 
 	# some sort of error?
 	if ( $self->state eq 'complex_sf' ) {
-		$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
+		$self->process_complex_error( undef, "$operation error $errnum: $errstr" );
 	} else {
 		die "unexpected data_sf_error in wrong state: " . $self->state;
 	}
 };
 
 sub _ftpd_complex_start {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	# actually process the "start" of the command
 	if ( code_preliminary( $code ) ) {
@@ -1130,14 +1133,14 @@ sub _ftpd_complex_start {
 			delete $self->command_data->{'buffer'};
 		}
 	} elsif ( code_success( $code ) ) {
-		die "unexpected success for start of complex command: $code $input";
+		die "unexpected success for start of complex command: $code $reply";
 	} else {
-		$self->tell_master_complex_error( $code, $input );
+		$self->process_complex_error( $code, $reply );
 	}
 }
 
 sub _ftpd_complex_error {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	# we are supposed to get some kind of error from the ftpd
 	# because something screwed up while doing the data connection
@@ -1146,19 +1149,19 @@ sub _ftpd_complex_error {
 		$self->state( 'idle' );
 		$self->command_data( undef );
 	} else {
-		die "unexpected input while in complex_error state: $code $input";
+		die "unexpected input while in complex_error state: $code $reply";
 	}
 }
 
 sub _ftpd_complex_done {
-	my( $self, $code, $input ) = @_;
+	my( $self, $code, $reply ) = @_;
 
 	# got the final result of the complex command!
-	if ( code_success( $code ) ) {
-		$self->tell_master( $self->command_data->{'cmd'}, @{ $self->command_data->{'data'} } );
-	} else {
-		$self->tell_master( $self->command_data->{'cmd'} . '_error', $code, $input, @{ $self->command_data->{'data'} } );
+	my $event = $self->command_data->{'cmd'};
+	if ( ! code_success( $code ) ) {
+		$event .= '_error';
 	}
+	$self->tell_master( $event, $code, $reply, @{ $self->command_data->{'data'} } );
 
 	# clear all data for this complex command
 	$self->state( 'idle' );
@@ -1167,8 +1170,8 @@ sub _ftpd_complex_done {
 	# TODO maybe we got the complex reply *before* the RW is closed?
 }
 
-sub tell_master_complex_error {
-	my( $self, $code, $error ) = @_;
+sub process_complex_error {
+	my( $self, $code, $reply ) = @_;
 
 	# go to the error state, so we can receive whatever the ftpd wants to send to us
 	$self->state( 'complex_error' );
@@ -1176,18 +1179,20 @@ sub tell_master_complex_error {
 	$self->data_sf( undef );
 	$self->data_rw( undef );
 
-	$self->tell_master( $self->command_data->{'cmd'} . '_error', $code, $error, @{ $self->command_data->{'data'} } );
+	$self->tell_master( $self->command_data->{'cmd'} . '_error', $code, $reply, @{ $self->command_data->{'data'} } );
 
 	# all done processing this complex command
 	$self->command_data( undef );
 }
 
-sub tell_master_complex_closed {
+sub process_complex_closed {
 	my $self = shift;
 
 	# Okay, we are done with this command!
 	$self->state( 'complex_done' );
 	$self->data_rw( undef );
+
+	# TODO should we send an event_closed command? I think it's superfluous...
 }
 
 event data_rw_input => sub {
@@ -1226,13 +1231,13 @@ event data_rw_error => sub {
 		if ( $operation eq "read" and $errnum == 0 ) {
 			# only in the put state is this a real error
 			if ( $self->command_data->{'cmd'} =~ /^(?:put|stor|stou)$/ ) {
-				$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
+				$self->process_complex_error( undef, "$operation error $errnum: $errstr" );
 			} else {
 				# otherwise it was a listing/get which means the data stream is done
-				$self->tell_master_complex_closed;
+				$self->process_complex_closed;
 			}
 		} else {
-			$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
+			$self->process_complex_error( undef, "$operation error $errnum: $errstr" );
 		}
 	} else {
 		die "unexpected data_rw_error in wrong state: " . $self->state;
