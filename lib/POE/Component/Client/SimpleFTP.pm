@@ -280,6 +280,22 @@ has data_rw => (
 	init_arg => undef,
 );
 
+{
+	use Moose::Util::TypeConstraints;
+
+	# what TYPE are we on now? A or I?
+	# it is valid until the next complex command, then we check this to see
+	# what we need to do
+	# A = ascii
+	# I = image
+	has data_type => (
+		isa => enum( [ qw( A I ) ] ),
+		is => 'rw',
+		init_arg => undef,
+		predicate => '_has_data_type',
+	);
+}
+
 has input_buffer => (
 	isa => 'Str',
 	is => 'rw',
@@ -313,6 +329,11 @@ has state => (
 	is => 'rw',
 	default => 'connect',
 	init_arg => undef,
+	trigger => sub {
+		my( $self, $new, $old ) = @_;
+		warn "switching from old state($old) to new state($new)\n" if DEBUG;
+		return;
+	},
 );
 
 # holds what "simple" command we are processing when state is 'simple_command'
@@ -343,11 +364,18 @@ my %command_map = (
 	'quote'		=> "QUOT",
 );
 
-my %summary_map;
-$summary_map{ lc( $command_map{ $_ } ) } = $_ for keys %command_map;
+my @simple_commands = ( qw(
+	cd cdup delete mdtm mkdir noop pwd rmdir site size stat syst help quit quote
+	cwd mkd rmd dele quot
+) );
+
+my @complex_commands = ( qw(
+	ls dir get put
+	list nlst retr stor
+) );
 
 # build our "simple" command handlers
-foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat syst type help quit quote ), keys %summary_map ) {
+foreach my $cmd ( @simple_commands ) {
 	event $cmd => sub {
 		my( $self, @args ) = @_;
 		my $command = $cmd;
@@ -357,13 +385,9 @@ foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat sy
 			die "Unable to send '$cmd' because we are processing " . $self->state;
 		}
 
-		# do we need to translate the command?
+		# do we need to translate the command to the actual FTP command?
 		if ( exists $command_map{ $cmd } ) {
 			$command = $command_map{ $cmd };
-		} else {
-			if ( exists $summary_map{ $cmd } ) {
-				$cmd = $summary_map{ $cmd };
-			}
 		}
 
 		# store the command we are processing then send it
@@ -371,6 +395,69 @@ foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat sy
 		$self->command( 'simple_command', $command, @args );
 		return;
 	};
+}
+
+# build our "complex" command handlers ( they require a data connection )
+foreach my $cmd ( @complex_commands ) {
+	event $cmd => sub {
+		my( $self, @args ) = @_;
+
+		# are we already sending a command?
+		if ( $self->state ne 'idle' ) {
+			die "Unable to send '$cmd' because we are processing " . $self->state;
+		}
+
+		# start doing this command!
+		warn "doing complex command($cmd) with data(" . ( defined $args[0] ? $args[0] : '' ) . ")\n" if DEBUG;
+		$self->complex_command( {} );
+		$self->complex_command->{'cmd'} = $cmd;
+		$self->complex_command->{'data'} = $args[0];
+		if ( $cmd =~ /^(?:ls|dir|list|nlst)$/ ) {
+			$self->prepare_listing;
+		} elsif ( $cmd =~ /^(?:get|put|retr|stor)$/ ) {
+			$self->prepare_transfer;
+		}
+
+		return;
+	};
+}
+
+sub prepare_listing {
+	my $self = shift;
+
+	# do we need to set the TYPE?
+	if ( ! $self->_has_data_type or $self->data_type eq 'I' ) {
+		$self->complex_command->{'type'} = 'A';
+		$self->command( 'complex_type', 'TYPE', 'A' );
+	} else {
+		# Okay, proceed to start the data connection stuff
+		$self->start_data_connection;
+	}
+}
+
+sub prepare_transfer {
+	my $self = shift;
+
+	# do we need to set the TYPE?
+	if ( ! $self->_has_data_type or $self->data_type eq 'A' ) {
+		$self->complex_command->{'type'} = 'I';
+		$self->command( 'complex_type', 'TYPE', 'I' );
+	} else {
+		# Okay, proceed to start the data connection stuff
+		$self->start_data_connection;
+	}
+}
+
+sub start_data_connection {
+	my $self = shift;
+
+	# okay, we go ahead with the PASV/PORT command
+	if ( $self->connection_mode eq 'passive' ) {
+		$self->command( 'complex_pasv', 'PASV' );
+	} else {
+		# Okay, create our listening socket
+		$self->create_data_connection;
+	}
 }
 
 event _child => sub {
@@ -384,7 +471,7 @@ sub BUILD {
 	if ( $self->tls_cmd or $self->tls_data ) {
 		eval 'require POE::Component::SSLify';
 		if ( $@ ) {
-			warn "Unable to use SSLify: $@";
+			warn "Unable to use SSLify: $@\n";
 			$self->_set_tls_cmd( 0 );
 			$self->_set_tls_data( 0 );
 		}
@@ -403,7 +490,7 @@ sub BUILD {
 sub START {
 	my $self = shift;
 
-	warn "starting" if DEBUG;
+	warn "starting\n" if DEBUG;
 
 	$poe_kernel->alias_set( $self->alias );
 
@@ -449,7 +536,7 @@ event timeout_event => sub {
 sub _shutdown {
 	my $self = shift;
 
-	warn "shutdown" if DEBUG;
+	warn "shutdown\n" if DEBUG;
 
 	# destroy our wheels
 	$self->cmd_sf( undef );
@@ -482,9 +569,9 @@ sub yield {
 }
 
 event cmd_sf_connected => sub {
-	my( $self, $fh, $host, $port, $id ) = @_;
+	my( $self, $fh, $host, $port, $wheel_id ) = @_;
 
-	warn "cmd_sf_connected" if DEBUG;
+	warn "cmd_sf_connected\n" if DEBUG;
 
 	# remove the timeout
 	$poe_kernel->delay( 'timeout_event' );
@@ -502,9 +589,9 @@ event cmd_sf_connected => sub {
 };
 
 event cmd_sf_error => sub {
-	my( $self, $operation, $errnum, $errstr, $id ) = @_;
+	my( $self, $operation, $errnum, $errstr, $wheel_id ) = @_;
 
-	warn "cmd_sf_error $operation $errnum $errstr" if DEBUG;
+	warn "cmd_sf_error $operation $errnum $errstr\n" if DEBUG;
 
 	$self->tell_master( 'connect_error', "$operation error $errnum: $errstr" );
 
@@ -515,9 +602,9 @@ event cmd_sf_error => sub {
 };
 
 event cmd_rw_input => sub {
-	my( $self, $input, $id ) = @_;
+	my( $self, $input, $wheel_id ) = @_;
 
-	warn "cmd_rw_input(" . $self->state . "): '$input'" if DEBUG;
+	warn "cmd_rw_input(" . $self->state . "): '$input'\n" if DEBUG;
 
 	# parse the input according to RFC 959
 	# TODO put this code in POE::Filter::FTP or something?
@@ -530,7 +617,7 @@ event cmd_rw_input => sub {
 
 		if ( length $minus ) {
 			# begin of multi-line reply
-			warn "begin of multi-line($code): $string" if DEBUG;
+			warn "begin of multi-line($code): '$string'\n" if DEBUG;
 			$self->input_buffer( $string );
 			$self->input_buffer_code( $code );
 			return;
@@ -541,12 +628,12 @@ event cmd_rw_input => sub {
 				if ( $self->input_buffer_code != $code ) {
 					die "ftpd sent invalid reply: $input";
 				} else {
-					warn "end of multi-line: $string" if DEBUG;
+					warn "end of multi-line: '$string'\n" if DEBUG;
 					$line = $self->input_buffer . "\n" . $string;
 					$self->input_buffer( '' );
 				}
 			} else {
-				warn "got entire line($code): $string" if DEBUG;
+				warn "got entire line($code): '$string'\n" if DEBUG;
 				$line = $string;
 			}
 		}
@@ -555,7 +642,7 @@ event cmd_rw_input => sub {
 		if ( length( $self->input_buffer ) ) {
 			# per the RFC, the first character should be padded by a space if needed
 			$input =~ s/^\s//;
-			warn "got multi-line input: $input" if DEBUG;
+			warn "got multi-line input: '$input'\n" if DEBUG;
 			$self->input_buffer( $self->input_buffer . $input );
 		} else {
 			die "ftpd sent invalid reply: $input";
@@ -564,35 +651,18 @@ event cmd_rw_input => sub {
 
 	# process the input, depending on our state
 	my $subref = "_ftpd_" . $self->state;
+	warn "calling $subref to process $code:$line\n" if DEBUG;
 	$self->$subref( $code, $line );
 
 	return;
 };
 
 event cmd_rw_error => sub {
-	my( $self, $operation, $errnum, $errstr, $id) = @_;
+	my( $self, $operation, $errnum, $errstr, $wheel_id) = @_;
 
-	warn "cmd_rw_error $operation $errnum $errstr" if DEBUG;
+	warn "cmd_rw_error $operation $errnum $errstr\n" if DEBUG;
 
 	# TODO blah
-
-	return;
-};
-
-event put => sub {
-	my( $self, $file ) = @_;
-
-	# are we already sending a command?
-	if ( $self->state ne 'idle' ) {
-		die "Unable to send 'put' because we are processing " . $self->state;
-	}
-
-	# start the put!
-	warn "starting PUT for '$file'" if DEBUG;
-	$self->complex_command( { 'cmd' => 'put', 'data' => $file } );
-
-	# we start off by setting the TYPE
-	$self->command( 'put_type', 'TYPE', 'I' );
 
 	return;
 };
@@ -615,7 +685,7 @@ sub command {
 	}
 
 	my $cmdstr = join( ' ', $cmd, @args );
-	warn "sending command '$cmdstr'" if DEBUG;
+	warn "sending command '$cmdstr'\n" if DEBUG;
 	$self->cmd_rw->put( $cmdstr );
 }
 
@@ -632,9 +702,6 @@ sub _ftpd_connect {
 	# TODO should we parse the code for failure replies?
 
 	$self->tell_master( 'connected', $code, $input );
-
-	# set our state to idle so we can start sending commands
-	$self->state( 'idle' );
 
 	# do we want TLS?
 	if ( $self->tls_cmd ) {
@@ -751,25 +818,20 @@ sub _ftpd_simple_command {
 	$self->state( 'idle' );
 }
 
-sub _ftpd_put_type {
+sub _ftpd_complex_type {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
-		# okay, we go ahead with the PASV/PORT command
-		if ( $self->connection_mode eq 'passive' ) {
-			$self->command( 'put_pasv', 'PASV' );
-		} else {
-			# Okay, create our listening socket
-			$self->create_data_connection;
-		}
+		$self->data_type( delete $self->complex_command->{'type'} );
+		$self->start_data_connection;
 	} else {
+		$self->tell_master( $self->complex_command->{'cmd'} . '_error', $code, $input );
 		$self->complex_command( undef );
-		$self->tell_master( 'put_error', $code, $input );
 		$self->state( 'idle' );
 	}
 }
 
-sub _ftpd_put_pasv {
+sub _ftpd_complex_pasv {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -781,8 +843,24 @@ sub _ftpd_put_pasv {
 		# Okay, create our listening socket
 		$self->create_data_connection;
 	} else {
+		$self->tell_master( $self->complex_command->{'cmd'} . '_error', $code, $input );
 		$self->complex_command( undef );
-		$self->tell_master( 'put_error', $code, $input );
+		$self->state( 'idle' );
+	}
+}
+
+sub _ftpd_complex_port {
+	my( $self, $code, $input ) = @_;
+
+	if ( code_success( $code ) ) {
+		# wait for the server to connect to us
+		$self->state( 'complex_sf' );
+	} else {
+		# get rid of the socketfactory wheel
+		$self->data_sf( undef );
+
+		$self->tell_master( $self->complex_command->{'cmd'} . '_error', $code, $input );
+		$self->complex_command( undef );
 		$self->state( 'idle' );
 	}
 }
@@ -792,7 +870,6 @@ sub create_data_connection {
 
 	# we now transition to the "complex" state
 	# the "real" state is kept in $self->complex_command->{cmd}
-	$self->state( 'complex_sf' );
 
 	# the arguments to socketfactory depend on whether we are in active or passive mode
 	my %sf_args = (
@@ -827,27 +904,43 @@ sub create_data_connection {
 		$addr = "127.0.0.1" if $addr eq "0.0.0.0";
 		my @addr = split( /\./, $addr );
 		my @port = ( int( $port / 256 ), $port % 256 );
-		$self->command( 'complex_sf', 'PORT', join( ',', @addr, @port ) );
+		$self->command( 'complex_port', 'PORT', join( ',', @addr, @port ) );
+	} else {
+		# wait for the connection to server
+		$self->state( 'complex_sf' );
 	}
 }
 
 event data_sf_connected => sub {
-	my( $self, $fh, $host, $port, $id ) = @_;
+	my( $self, $fh, $host, $port, $wheel_id ) = @_;
 
-	warn "data_sf_connected" if DEBUG;
+	warn "data_sf_connected\n" if DEBUG;
+
+	# all done with the SF wheel
+	$self->data_sf( undef );
 
 	# kill the timeout timer
 	$poe_kernel->delay( 'timeout_event' );
 
-	# convert it into a readwrite wheel
-	$self->data_rw( POE::Wheel::ReadWrite->new(
+	# TODO prevent attacks by verifying that the connected IP actually is the same IP as the server we're connecting to?
+
+	# args for the RW wheel
+	my %rw_args = (
 		Handle	=> $fh,
-		Filter	=> POE::Filter::Stream->new,
 		Driver	=> POE::Driver::SysRW->new,
 		InputEvent	=> 'data_rw_input',
 		ErrorEvent	=> 'data_rw_error',
 		FlushedEvent	=> 'data_rw_flushed',
-	) );
+	);
+	if ( $self->complex_command->{'cmd'} =~ /^(?:ls|dir|list|nlst)$/ ) {
+		# TODO use POE::Filter::Ls or whatever?
+		$rw_args{'Filter'} = POE::Filter::Line->new( InputLiteral => EOL );
+	} else {
+		$rw_args{'Filter'} = POE::Filter::Stream->new;
+	}
+
+	# convert it into a readwrite wheel
+	$self->data_rw( POE::Wheel::ReadWrite->new( %rw_args ) );
 
 	# now, send the actual complex command :)
 	my $cmd = $self->complex_command->{'cmd'};
@@ -859,7 +952,67 @@ event data_sf_connected => sub {
 		$cmd = uc( $cmd );
 	}
 
-	$self->command( 'complex_data', $cmd, $self->complex_command->{'args'} );
+	# since the code in sub command doesn't like sending undef's we have to check it here
+	if ( defined $self->complex_command->{'data'} ) {
+		$cmd .= " " . $self->complex_command->{'data'};
+	}
+
+	$self->command( 'complex_start', $cmd );
+
+	return;
+};
+
+event data_sf_error => sub {
+	my( $self, $operation, $errnum, $errstr, $wheel_id ) = @_;
+
+	# some sort of error?
+	if ( $self->state eq 'complex_sf' ) {
+		# error while waiting/connecting to the server
+		$self->data_sf( undef );
+
+		$self->tell_master( $self->complex_command->{'cmd'} . '_error', "$operation error $errnum: $errstr" );
+		$self->complex_command( undef );
+		$self->state( 'idle' );
+	} else {
+		die "unknown state in data_sf_error: " . $self->state;
+	}
+};
+
+sub _ftpd_complex_start {
+	my( $self, $code, $input ) = @_;
+
+	# actually process the "start" of the command
+	# and let the master know it's ready to send/receive stuff!
+
+	# TODO finish this
+}
+
+event data_rw_input => sub {
+	my( $self, $line, $wheel_id ) = @_;
+
+	warn "data_rw_input: '$line'\n" if DEBUG;
+
+	# TODO finish this
+
+	return;
+};
+
+event data_rw_error => sub {
+	my( $self, $operation, $errnum, $errstr, $wheel_id ) = @_;
+
+	warn "data_rw_error\n" if DEBUG;
+
+	# TODO finish this
+
+	return;
+};
+
+event data_rw_flushed => sub {
+	my( $self, $wheel_id ) = @_;
+
+	warn "data_rw_flushed\n" if DEBUG;
+
+	# TODO finish this
 
 	return;
 };
