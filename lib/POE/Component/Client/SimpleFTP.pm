@@ -363,11 +363,13 @@ my %command_map = (
 	'put'		=> "STOR",
 	'delete'	=> "DELE",
 	'quote'		=> "QUOT",
+	'disconnect'	=> "QUIT",
 );
 
 my @simple_commands = ( qw(
 	cd cdup delete mdtm mkdir noop pwd rmdir site size stat syst help quit quote
 	cwd mkd rmd dele quot
+	disconnect
 ) );
 
 my @complex_commands = ( qw(
@@ -596,7 +598,7 @@ event cmd_sf_error => sub {
 
 	warn "cmd_sf_error $operation $errnum $errstr\n" if DEBUG;
 
-	$self->tell_master( 'connect_error', "$operation error $errnum: $errstr" );
+	$self->tell_master( 'connect_error', 0, "$operation error $errnum: $errstr" );
 
 	# nothing else to do...
 	$self->_shutdown;
@@ -813,7 +815,7 @@ sub _ftpd_simple_command {
 	my( $self, $code, $input ) = @_;
 
 	# special-case for quit
-	if ( $self->simple_command eq 'quit' ) {
+	if ( $self->simple_command =~ /^(?:quit|disconnect)$/ ) {
 		$self->_shutdown;
 		return;
 	}
@@ -991,6 +993,15 @@ sub _ftpd_complex_start {
 		# let the master know it's ready to send/receive stuff!
 		$self->tell_master( $self->command_data->{'cmd'} . '_connected', @{ $self->command_data->{'data'} } );
 		$self->state( 'complex_data' );
+
+		# do we have any buffered data?
+		if ( exists $self->command_data->{'buffer'} ) {
+			warn "sending buffered chunks\n" if DEBUG;
+			foreach my $chunk ( @{ $self->command_data->{'buffer'} } ) {
+				$self->tell_master( $self->command_data->{'cmd'} . '_data', $chunk, @{ $self->command_data->{'data'} } );
+			}
+			delete $self->command_data->{'buffer'};
+		}
 	} elsif ( code_success( $code ) ) {
 		die "unexpected success for start of complex command: $code $input";
 	} else {
@@ -1050,19 +1061,26 @@ sub tell_master_complex_closed {
 	# Okay, we are done with this command!
 	$self->state( 'complex_done' );
 	$self->data_rw( undef );
-
-	$self->tell_master( $self->command_data->{'cmd'} . '_closed', @{ $self->command_data->{'data'} } );
 }
 
 event data_rw_input => sub {
-	my( $self, $line, $wheel_id ) = @_;
+	my( $self, $input, $wheel_id ) = @_;
 
-	warn "data_rw_input: '$line'\n" if DEBUG;
+	warn "data_rw_input: '$input'\n" if DEBUG;
 
 	# should only happen in complex state
 	if ( $self->state eq 'complex_data' ) {
 		# send it back to the master
-		$self->tell_master( $self->command_data->{'cmd'} . '_data', $line, @{ $self->command_data->{'data'} } );
+		$self->tell_master( $self->command_data->{'cmd'} . '_data', $input, @{ $self->command_data->{'data'} } );
+	} elsif ( $self->state eq 'complex_start' ) {
+		# oh boy, the server immediately sent us some data while we were processing the start
+		# that means we have to buffer it so we correctly send it *after* we send the connected event
+		warn "storing input for buffer\n" if DEBUG;
+		if ( ! exists $self->command_data->{'buffer'} ) {
+			$self->command_data->{'buffer'} = [ $input ];
+		} else {
+			push( @{ $self->command_data->{'buffer'} }, $input );
+		}
 	} else {
 		die "unexpected data_rw_input in wrong state: " . $self->state;
 	}

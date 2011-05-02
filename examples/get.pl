@@ -1,9 +1,9 @@
 #!/usr/bin/perl
-package LsClient;
+package GetClient;
 use strict;
 use warnings;
 
-# a simple client to list a directory
+# a simple client to get a file
 
 #sub POE::Component::Client::SimpleFTP::DEBUG () { 1 };
 
@@ -44,10 +44,10 @@ has password => (
 	required => 1,
 );
 
-has path => (
+has file => (
 	isa => 'Str',
 	is => 'ro',
-	default => '/',
+	required => 1,
 );
 
 # our ftp object
@@ -103,21 +103,21 @@ event login_error => sub {
 event authenticated => sub {
 	my $self = shift;
 
-	# Okay, get the list!
-	$self->ftp->yield( 'ls', $self->path );
+	# Okay, get the file!
+	$self->ftp->yield( 'get', $self->file );
 
 	return;
 };
 
-event ls_error => sub {
+event get_error => sub {
 	my( $self, $code, $string, $path ) = @_;
 
-	die "ls error: $code $string";
+	die "get error: $code $string";
 
 	return;
 };
 
-event ls_connected => sub {
+event get_connected => sub {
 	my( $self, $path ) = @_;
 
 	# do nothing hah
@@ -125,7 +125,7 @@ event ls_connected => sub {
 	return;
 };
 
-event ls_data => sub {
+event get_data => sub {
 	my( $self, $input ) = @_;
 
 	print "$input\n";
@@ -133,15 +133,15 @@ event ls_data => sub {
 	return;
 };
 
-event ls => sub {
+event get => sub {
 	my( $self, $path ) = @_;
 
-	# done with the listing, we disconnect
+	# done with the file, we disconnect
 	$self->ftp->yield( 'quit' );
 
 	return;
 };
 
 # run the client!
-my $ftp = LsClient->new_with_options;
+my $ftp = GetClient->new_with_options;
 POE::Kernel->run;
