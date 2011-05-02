@@ -2,6 +2,7 @@ package POE::Component::Client::SimpleFTP;
 
 # ABSTRACT: A simple FTP client library for POE
 
+use POE::Component::Client::SimpleFTP::Utils qw( :code EOL );
 use MooseX::POE::SweetArgs;
 use POE;
 use POE::Wheel::SocketFactory;
@@ -12,11 +13,35 @@ use POE::Driver::SysRW;
 
 use Socket qw( INADDR_ANY AF_INET SOCK_STREAM );
 
-# define some constants
 BEGIN {
+
+=sub DEBUG
+
+Enable this if you want to get debugging output. Do it like this:
+
+	sub POE::Component::Client::SimpleFTP::DEBUG () { 1 }
+	use POE::Component::Client::SimpleFTP;
+
+The default is: false
+
+=cut
+
 	if ( ! defined &DEBUG ) { *DEBUG = sub () { 0 } }
 }
-sub EOL () { "\015\012" }
+
+=attr alias
+
+The alias this component will use. You can send commands to the ftpd in 2 ways:
+
+	my $ftp = POE::Component::Client::SimpleFTP->new( ... );
+	$poe_kernel->post( 'ftp', 'cd', 'foobar' );
+
+	# Or, you can use the yield sub:
+	$ftp->yield( 'cd', 'foobar' );
+
+The default is: ftp
+
+=cut
 
 has alias => (
 	isa => 'Str',
@@ -24,11 +49,27 @@ has alias => (
 	default => 'ftp',
 );
 
+=attr username
+
+The FTP username you will be sending to the server.
+
+required.
+
+=cut
+
 has username => (
 	isa => 'Str',
 	is => 'ro',
 	required => 1,
 );
+
+=attr password
+
+The FTP password you will be sending to the server.
+
+required.
+
+=cut
 
 has password => (
 	isa => 'Str',
@@ -36,17 +77,13 @@ has password => (
 	required => 1,
 );
 
-has local_addr => (
-	isa => 'Str',
-	is => 'ro',
-	default => INADDR_ANY,
-);
+=attr remote_addr
 
-has local_port => (
-	isa => 'Int',
-	is => 'ro',
-	default => 0,
-);
+The IP address of the FTP server to connect to. Can be a DNS hostname or IPv4/6 string.
+
+required.
+
+=cut
 
 has remote_addr => (
 	isa => 'Str',
@@ -54,11 +91,56 @@ has remote_addr => (
 	required => 1,
 );
 
+=attr remote_port
+
+The port of the FTP server to connect to.
+
+The default is: 21
+
+=cut
+
 has remote_port => (
 	isa => 'Int',
 	is => 'ro',
 	default => 21,
 );
+
+=attr local_addr
+
+The local IP address to bind to for all connections to the server.
+
+The default is: INADDR_ANY ( let the OS decide )
+
+=cut
+
+has local_addr => (
+	isa => 'Str',
+	is => 'ro',
+	default => INADDR_ANY,
+);
+
+=attr local_port
+
+The local port to bind to for all connections to the server.
+
+The default is: 0 ( let the OS decide )
+
+=cut
+
+has local_port => (
+	isa => 'Int',
+	is => 'ro',
+	default => 0,
+);
+
+=attr tls_cmd
+
+A boolean value to enable/disable TLS encryption of the command connection. If you want to use this,
+you must have L<POE::Component::SSLify> installed!
+
+The default is: false
+
+=cut
 
 has tls_cmd => (
 	isa => 'Bool',
@@ -67,6 +149,15 @@ has tls_cmd => (
 	default => 0,
 );
 
+=attr tls_data
+
+A boolean value to enable/disable TLS encryption of the data connection. If you want to use this,
+you must have L<POE::Component::SSLify> installed!
+
+The default is: false
+
+=cut
+
 has tls_data => (
 	isa => 'Bool',
 	is => 'ro',
@@ -74,11 +165,29 @@ has tls_data => (
 	default => 0,
 );
 
+=attr timeout
+
+A value specifying the timeout in seconds for the initial connection to the FTP server.
+
+The default is: 120
+
+=cut
+
 has timeout => (
 	isa => 'Int',
 	is => 'ro',
 	default => 120,
 );
+
+=attr connection_mode
+
+Determine what connection mode we will be using when opening the data connection to the server. In "active" mode,
+the server will be connecting to us. In "passive" mode we will be connecting to the server. You usually need "passive" mode
+if you are behind a firewall.
+
+The default is: passive
+
+=cut
 
 {
 	use Moose::Util::TypeConstraints;
@@ -177,7 +286,7 @@ foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat ty
 
 		# store the command we are processing then send it
 		$self->command( 'simple_command', $command, @args );
-		$self->simple_command( $cmd );
+		$self->simple_command( $cmd ); # store it AFTER calling command() so it can do it's thing first
 		return;
 	};
 }
@@ -238,7 +347,19 @@ sub _shutdown {
 	$poe_kernel->alias_remove( $self->alias );
 }
 
-# helper sub to send events to the session
+=sub yield
+
+This method provides an alternative object based means of posting events to the component.
+First argument is the event to post, following arguments are sent as arguments to the resultant post.
+
+	my $ftp = POE::Component::Client::SimpleFTP->new( ... );
+	$ftp->yield( 'cd', 'foobar' );
+
+	# equivalent to:
+	$poe_kernel->post( $ftp->alias, 'cd', 'foobar' );
+
+=cut
+
 sub yield {
 	my( $self, @args ) = @_;
 	$poe_kernel->post( $self->get_session_id, @args );
@@ -316,13 +437,13 @@ event rw_input => sub {
 	}
 
 	# process the input, depending on our state
-	my $subref = "ftpd_" . $self->state;
+	my $subref = "_ftpd_" . $self->state;
 	$self->$subref( $code, $line );
 
 	return;
 };
 
-sub ftpd_idle {
+sub _ftpd_idle {
 	my( $self, $code, $input ) = @_;
 
 	die "unexpected text while we are idle: $code $input";
@@ -355,21 +476,8 @@ sub command {
 	$self->readwrite->put( $cmdstr );
 }
 
-# helper subs to figure out what a code is
-# 1yz   Positive Preliminary reply
-# 2yz   Positive Completion reply
-# 3yz   Positive Intermediate reply
-# 4yz   Transient Negative Completion reply
-# 5yz   Permanent Negative Completion reply
-# 6yz   Protected reply
-sub code_preliminary { return substr( $_[0], 0, 1 ) == 1 }
-sub code_success { return substr( $_[0], 0, 1 ) == 2 }
-sub code_intermediate { return substr( $_[0], 0, 1 ) == 3 }
-sub code_failure { return $_[0] =~ /^(?:4|5)/ }
-sub code_tls { return substr( $_[0], 0, 1 ) == 6 }
-
 # should be the first line of text we received from the ftpd
-sub ftpd_connect {
+sub _ftpd_connect {
 	my( $self, $code, $input ) = @_;
 
 	# TODO should we parse the code for failure replies?
@@ -389,7 +497,7 @@ sub ftpd_connect {
 	}
 }
 
-sub ftpd_quote {
+sub _ftpd_quote {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -401,7 +509,7 @@ sub ftpd_quote {
 	$self->state( 'idle' );
 }
 
-sub ftpd_tls_cmd {
+sub _ftpd_tls_cmd {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -432,7 +540,7 @@ sub ftpd_tls_cmd {
 	}
 }
 
-sub ftpd_pbsz {
+sub _ftpd_pbsz {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -443,7 +551,7 @@ sub ftpd_pbsz {
 	}
 }
 
-sub ftpd_prot {
+sub _ftpd_prot {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -455,7 +563,7 @@ sub ftpd_prot {
 	$self->state( 'idle' );
 }
 
-sub ftpd_user {
+sub _ftpd_user {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -477,7 +585,7 @@ sub ftpd_user {
 	}
 }
 
-sub ftpd_password {
+sub _ftpd_password {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -494,7 +602,7 @@ sub ftpd_password {
 	}
 }
 
-sub ftpd_simple_command {
+sub _ftpd_simple_command {
 	my( $self, $code, $input ) = @_;
 
 	if ( code_success( $code ) ) {
@@ -506,4 +614,30 @@ sub ftpd_simple_command {
 	$self->state( 'idle' );
 }
 
+no MooseX::POE::SweetArgs;
+__PACKAGE__->meta->make_immutable;
 1;
+
+=pod
+
+=for stopwords ftp
+
+=for Pod::Coverage command EOL START BUILD tell_master
+
+=head1 SYNOPSIS
+
+	# A simple FTP client logging in to a server
+
+=head1 DESCRIPTION
+
+This is a simple FTP client to use in a POE application. It's a complete rewrite of the old L<POE::Component::Client::FTP> codebase and
+adds a lot of convenience functions. Most of the API is compatible, so you should have few problems porting your code to this module.
+
+=head1 TLS support
+
+TLS encryption is available if you want. You would need to enable the L</tls_cmd> and L</tls_data> attributes and have L<POE::Component::SSLify>
+installed in order to use it. It will work with a lot of servers and commands. However, not the entire RFC is implemented! The relevant RFCs is
+L<http://tools.ietf.org/html/rfc4217> and L<http://tools.ietf.org/html/rfc2228>. If you encounter problems when using TLS on a server, please
+let me know by filing a bug report!
+
+=cut

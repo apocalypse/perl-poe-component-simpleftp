@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <includepath>
-  <includepathentry path="${resource_loc:/perl-test-apocalypse/lib}" />
+  <includepathentry path="${resource_loc:/perl-poe-component-simpleftp/lib}" />
 </includepath>
