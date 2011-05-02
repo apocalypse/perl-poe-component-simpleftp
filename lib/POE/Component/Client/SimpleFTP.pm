@@ -11,7 +11,45 @@ use POE::Filter::Stream;
 use POE::Filter::Line;
 use POE::Driver::SysRW;
 
-use Socket qw( INADDR_ANY AF_INET SOCK_STREAM );
+use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
+
+# list of things that is unimplemented
+# full TLS support - check the RFCs
+# FXP ( server<->server ) transfers
+# 4.1.2.  TRANSFER PARAMETER COMMANDS ( RFC 959 )
+#  This implies that the server must "remember" the applicable default values.
+#  ( no need to send TYPE over and over! )
+# intelligent NAT detection
+# full ipv6 testing/support
+# RFC 959 commands:
+# * ACCT
+# * SMNT
+# * REIN
+# * STRU
+# * MODE
+# * STOU
+# * APPE
+# * ALLO
+# * REST
+# * ABOR
+# RFC 2228 commands:
+# * ADAT
+# * CCC
+# * MIC
+# * CONF
+# * ENC
+# RFC 2389 commands:
+# * FEAT
+# RFC 2640 commands:
+# * the entire thing :)
+# RFC 2773 commands:
+# * the entire thing :)
+# RFC 3659 commands:
+# * REST
+# * MLST
+# * MLSD
+# RFC 5795 commands:
+# * the entire thing :)
 
 BEGIN {
 
@@ -305,8 +343,11 @@ my %command_map = (
 	'quote'		=> "QUOT",
 );
 
+my %summary_map;
+$summary_map{ lc( $command_map{ $_ } ) } = $_ for keys %command_map;
+
 # build our "simple" command handlers
-foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat quit quote ) ) {
+foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat syst type help quit quote ), keys %summary_map ) {
 	event $cmd => sub {
 		my( $self, @args ) = @_;
 		my $command = $cmd;
@@ -319,6 +360,10 @@ foreach my $cmd ( qw( cd cdup delete mdtm mkdir noop pwd rmdir site size stat qu
 		# do we need to translate the command?
 		if ( exists $command_map{ $cmd } ) {
 			$command = $command_map{ $cmd };
+		} else {
+			if ( exists $summary_map{ $cmd } ) {
+				$cmd = $summary_map{ $cmd };
+			}
 		}
 
 		# store the command we are processing then send it
@@ -544,7 +589,7 @@ event put => sub {
 
 	# start the put!
 	warn "starting PUT for '$file'" if DEBUG;
-	$self->complex_command( { 'cmd' => 'put', 'file' => $file } );
+	$self->complex_command( { 'cmd' => 'put', 'data' => $file } );
 
 	# we start off by setting the TYPE
 	$self->command( 'put_type', 'TYPE', 'I' );
@@ -773,6 +818,17 @@ sub create_data_connection {
 	# create the socketfactory!
 	$poe_kernel->delay( 'timeout_event' => $self->timeout );
 	$self->data_sf( POE::Wheel::SocketFactory->new( %sf_args ) );
+
+	# Now that we've created the SF, do we need to send the PORT data?
+	if ( $self->connection_mode eq 'active' ) {
+		my $socket = $self->data_sf->getsockname;
+		my( $port, $addr ) = sockaddr_in( $socket );
+		$addr = inet_ntoa( $addr );
+		$addr = "127.0.0.1" if $addr eq "0.0.0.0";
+		my @addr = split( /\./, $addr );
+		my @port = ( int( $port / 256 ), $port % 256 );
+		$self->command( 'complex_sf', 'PORT', join( ',', @addr, @port ) );
+	}
 }
 
 event data_sf_connected => sub {
@@ -783,12 +839,27 @@ event data_sf_connected => sub {
 	# kill the timeout timer
 	$poe_kernel->delay( 'timeout_event' );
 
-	# now, is this an active or passive connection?
-	if ( $self->connection_mode eq 'passive' ) {
-		# the server connected to us!
+	# convert it into a readwrite wheel
+	$self->data_rw( POE::Wheel::ReadWrite->new(
+		Handle	=> $fh,
+		Filter	=> POE::Filter::Stream->new,
+		Driver	=> POE::Driver::SysRW->new,
+		InputEvent	=> 'data_rw_input',
+		ErrorEvent	=> 'data_rw_error',
+		FlushedEvent	=> 'data_rw_flushed',
+	) );
+
+	# now, send the actual complex command :)
+	my $cmd = $self->complex_command->{'cmd'};
+
+	# do we need to translate the command?
+	if ( exists $command_map{ $cmd } ) {
+		$cmd = $command_map{ $cmd };
 	} else {
-		# we connected to the server!
+		$cmd = uc( $cmd );
 	}
+
+	$self->command( 'complex_data', $cmd, $self->complex_command->{'args'} );
 
 	return;
 };
