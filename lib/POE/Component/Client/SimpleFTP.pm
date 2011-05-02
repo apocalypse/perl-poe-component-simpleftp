@@ -29,7 +29,6 @@ use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 # * ALLO ( probably easy to implement, but it is generally unused? )
 # * REST ( a bit tricky to implement, maybe later )
 # * ABOR ( tricky to implement, as it messes with state )
-# * RNFR/RNTO
 # RFC 2228 commands:
 # * ADAT
 # * CCC
@@ -370,7 +369,6 @@ my @simple_commands = ( qw(
 	dele delete
 	mkd mkdir
 	rmd rmdir
-	mkd rmd
 	quot quote
 	quit disconnect
 ) );
@@ -425,9 +423,10 @@ foreach my $cmd ( @complex_commands ) {
 
 		# start doing this command!
 		warn "doing complex command($cmd) with data(" . join( ' ', @args ) . ")\n" if DEBUG;
-		$self->command_data( {} );
-		$self->command_data->{'cmd'} = $cmd;
-		$self->command_data->{'data'} = \@args;
+		$self->command_data( {
+			'cmd' => $cmd,
+			'data' => \@args,
+		} );
 		if ( $cmd =~ /^(?:ls|dir|list|nlst)$/ ) {
 			$self->prepare_listing;
 		} elsif ( $cmd =~ /^(?:get|put|retr|stor)$/ ) {
@@ -498,6 +497,55 @@ foreach my $cmd ( qw( put stor ) ) {
 
 		return;
 	};
+}
+
+# rename support
+event rename => sub {
+	my( $self, $from, $to ) = @_;
+
+	# ignore commands if we are shutting down
+	return if $self->state eq 'shutdown';
+
+	# are we already sending a command?
+	if ( $self->state ne 'idle' ) {
+		die "Unable to send 'rename' because we are processing " . $self->state;
+	}
+
+	# Start the rename!
+	$self->command_data( {
+		from => $from,
+		to => $to,
+	} );
+	$self->command( 'rename_start', 'RNFR', $from );
+
+	return;
+};
+
+sub _ftpd_rename_start {
+	my( $self, $code, $input ) = @_;
+
+	if ( code_intermediate( $code ) ) {
+		# TODO should we send a rename_partial event?
+
+		$self->command( 'rename_done', 'RNTO', $self->complex_command->{'to'} );
+	} else {
+		$self->tell_master( 'rename_error', $code, $input, $self->complex_command->{'from'}, $self->complex_command->{'to'} );
+		$self->command_data( undef );
+		$self->state( 'idle' );
+	}
+}
+
+sub _ftpd_rename_done {
+	my( $self, $code, $input ) = @_;
+
+	if ( code_success( $code ) ) {
+		$self->tell_master( 'rename', $self->complex_command->{'from'}, $self->complex_command->{'to'} );
+	} else {
+		$self->tell_master( 'rename_error', $code, $input, $self->complex_command->{'from'}, $self->complex_command->{'to'} );
+	}
+
+	$self->command_data( undef );
+	$self->state( 'idle' );
 }
 
 sub prepare_listing {
