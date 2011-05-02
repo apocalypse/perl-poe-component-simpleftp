@@ -14,24 +14,22 @@ use POE::Driver::SysRW;
 use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 
 # list of things that is unimplemented
-# full TLS support - check the RFCs
-# FXP ( server<->server ) transfers
-# 4.1.2.  TRANSFER PARAMETER COMMANDS ( RFC 959 )
-#  This implies that the server must "remember" the applicable default values.
-#  ( no need to send TYPE over and over! )
-# intelligent NAT detection
-# full ipv6 testing/support
+# * full TLS support - check the RFCs
+# * FXP ( server<->server ) transfers
+# * intelligent NAT detection
+# * full ipv6 testing/support
+# * restart/abort of a transfer
+# * sending STAT while a complex command is in progress
+# * manual control of PORT/PASV/TYPE - maybe unnecessary?
 # RFC 959 commands:
-# * ACCT
-# * SMNT
-# * REIN
-# * STRU
-# * MODE
-# * STOU
-# * APPE
-# * ALLO
-# * REST
-# * ABOR
+# * REIN ( tricky to implement, as it messes with state )
+# * STRU ( default file type is always a good idea )
+# * MODE ( default stream type is always a good idea )
+# * APPE ( should be easy to implement, but im lazy )
+# * ALLO ( probably easy to implement, but it is generally unused? )
+# * REST ( a bit tricky to implement, maybe later )
+# * ABOR ( tricky to implement, as it messes with state )
+# * RNFR/RNTO
 # RFC 2228 commands:
 # * ADAT
 # * CCC
@@ -367,14 +365,21 @@ my %command_map = (
 );
 
 my @simple_commands = ( qw(
-	cd cdup delete mdtm mkdir noop pwd rmdir site size stat syst help quit quote
-	cwd mkd rmd dele quot
-	disconnect
+	cdup mdtm noop pwd site size stat syst help acct smnt
+	cd cwd
+	dele delete
+	mkd mkdir
+	rmd rmdir
+	mkd rmd
+	quot quote
+	quit disconnect
 ) );
 
 my @complex_commands = ( qw(
-	ls dir get put
-	list nlst retr stor
+	list ls
+	nlst dir
+	retr get
+	stor stou put
 ) );
 
 # build our "simple" command handlers
@@ -1172,7 +1177,7 @@ event data_rw_error => sub {
 		# Is it a normal EOF or an error?
 		if ( $operation eq "read" and $errnum == 0 ) {
 			# only in the put state is this a real error
-			if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
+			if ( $self->command_data->{'cmd'} =~ /^(?:put|stor|stou)$/ ) {
 				$self->tell_master_complex_error( undef, "$operation error $errnum: $errstr" );
 			} else {
 				# otherwise it was a listing/get which means the data stream is done
@@ -1196,7 +1201,7 @@ event data_rw_flushed => sub {
 	# should only happen in complex state
 	if ( $self->state eq 'complex_data' ) {
 		# This should only happen for put commands
-		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor)$/ ) {
+		if ( $self->command_data->{'cmd'} =~ /^(?:put|stor|stou)$/ ) {
 			$self->tell_master( $self->command_data->{'cmd'} . '_flushed', @{ $self->command_data->{'data'} } );
 		} else {
 			die "unexpected data_rw_flushed for complex command:" . $self->command_data->{'cmd'};
