@@ -15,7 +15,7 @@ use Socket qw( INADDR_ANY AF_INET SOCK_STREAM );
 
 BEGIN {
 
-=sub DEBUG
+=func DEBUG
 
 Enable this if you want to get debugging output. Do it like this:
 
@@ -347,7 +347,7 @@ sub _shutdown {
 	$poe_kernel->alias_remove( $self->alias );
 }
 
-=sub yield
+=func yield
 
 This method provides an alternative object based means of posting events to the component.
 First argument is the event to post, following arguments are sent as arguments to the resultant post.

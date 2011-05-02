@@ -13,31 +13,31 @@ our %EXPORT_TAGS = (
 	],
 );
 
-=sub code_preliminary
+=func code_preliminary
 
 Tests whether the code is a 1yz code ( Positive Preliminary reply ) and returns a boolean value.
 
 =cut
 
-=sub code_success
+=func code_success
 
 Tests whether the code is a 2yz code ( Positive Completion reply ) and returns a boolean value.
 
 =cut
 
-=sub code_intermediate
+=func code_intermediate
 
 Tests whether the code is a 3yz code ( Positive Intermediate reply ) and returns a boolean value.
 
 =cut
 
-=sub code_failure
+=func code_failure
 
 Tests whether the code is a 4yz or 5yz code ( Transient/Permanent Negative Completion reply ) and returns a boolean value.
 
 =cut
 
-=sub code_tls
+=func code_tls
 
 Tests whether the code is a 6yz code ( Protected reply ) and returns a boolean value.
 
@@ -50,7 +50,7 @@ sub code_intermediate { return substr( $_[0], 0, 1 ) == 3 }
 sub code_failure { return $_[0] =~ /^[45]/ }
 sub code_tls { return substr( $_[0], 0, 1 ) == 6 }
 
-=sub EOL
+=func EOL
 
 Returns the end-of-line terminator as specified in RFC 959
 
@@ -65,6 +65,9 @@ sub EOL () { "\015\012" }
 =head1 SYNOPSIS
 
 	use POE::Component::Client::SimpleFTP::Utils qw( :code );
+
+	# in an event handler
+	my $code = shift;
 	if ( code_success( $code ) ) {
 		print "FTP command OK\n";
 	} else {
