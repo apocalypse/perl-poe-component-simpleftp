@@ -358,15 +358,15 @@ foreach my $cmd ( @simple_commands ) {
 		# ignore commands if we are shutting down
 		return if $self->state eq 'shutdown';
 
-		# special-case the quit/disconnect methods
-		if ( $cmd =~ /^(?:quit|disconnect)$/ ) {
-			$self->_shutdown;
-			return;
-		}
-
 		# are we already sending a command?
 		if ( $self->state ne 'idle' ) {
-			die "Unable to send '$cmd' because we are processing " . $self->state;
+			# special-case the quit/disconnect methods
+			if ( $cmd =~ /^(?:quit|disconnect)$/ ) {
+				$self->_shutdown;
+				return;
+			} else {
+				die "Unable to send '$cmd' because we are processing " . $self->state;
+			}
 		}
 
 		# do we need to translate the command to the actual FTP command?
