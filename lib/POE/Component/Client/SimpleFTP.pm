@@ -1025,7 +1025,6 @@ event data_sf_connected => sub {
 
 	# do we need to send the actual command?
 	if ( $self->connection_mode eq 'passive' ) {
-		# now, send the actual complex command :)
 		$self->process_complex_command;
 	}
 
@@ -1556,7 +1555,114 @@ An alias for L</opts>
 =head2 Complex Commands
 
 This class of commands is called complex because they require opening a new data connection to the server. The requested data is transferred
-over this connection, and the result is sent back to your session.
+over this connection, and the result is sent back to your session. All of the commands behave the same except for the "upload" types.
+
+The typical flow of this command is as follows:
+
+	$ftp->yield( 'get', "/myfile.txt" );
+
+	# receive a "get_connected" event
+	#	args is: "/myfile.txt"
+
+	# receive a "get_data" event
+	#	args is: $chunk, "/myfile.txt"
+
+	# at this point you should write out the data to the screen, a file, or whatever!
+
+	# ... keep receiving "get_data" until the server finish sending
+
+	# receive a "get" event
+	#	args is: $code, $reply, "/myfile.txt"
+
+	# if at any point there is an error, a "get_error" event is sent
+	#	args is: $code, $reply, "/myfile.txt"
+
+For the "upload" events where you are sending data to the server, the flow is:
+
+	$ftp->yield( 'put', '/myfile.txt' );
+
+	# receive a "put_connected" event
+	#	args is: "/myfile"
+
+	# at this point you should get the data to send to the server
+	# either from your local filesystem, from RAM, or from a database server, whatever!
+
+	# get a chunk of data to send to the server
+	$ftp->yield( 'put_data', $chunk );
+
+	# receive a "put_flushed" event
+	#	args is: "/myfile"
+
+	# at this point, you can either send more chunks ( put_data )
+	# or, signal EOF
+	$ftp->yield( 'put_close' );
+
+	# receive a "put" event
+	#	args is: $code, $reply, "/myfile"
+
+	# if at any point there is an error, a "put_error" event is sent
+	#	args is: $code, $reply, "/myfile"
+
+=head3 list
+
+Receives a directory list. The data is sent in a format similar to the UNIX "ls" command, but can be anything!
+
+Arguments: the optional path to query ( defaults to current working directory )
+
+Example data:
+
+	drwxr-xr-x    4 1000     1000         4096 May 02 18:24 a
+	drwxr-xr-x    4 1000     1000         4096 May 02 18:24 b
+	drwxr-xr-x    4 1000     1000         4096 May 02 18:24 c
+	-rw-r--r--    1 1000     1000            0 May 02 20:26 foo.txt
+
+=head3 ls
+
+An alias for L<list>
+
+=head3 nlst
+
+Receives a directory list. Differs from L<list> in that only the names are received.
+
+Arguments: the optional path to query ( defaults to current working directory )
+
+Example data:
+
+	a
+	b
+	c
+	foo.txt
+
+=head3 dir
+
+An alias for L</nlst>
+
+=head3 retr
+
+Retrieves a file from the server.
+
+Arguments: the filename to receive
+
+=head3 get
+
+An alias for L</get>
+
+=head3 stor
+
+Transmits a file to the server. This uses the "upload" command flow explained in L</Complex Commands>!
+
+Arguments: the filename to put
+
+=head3 stou
+
+Transmits a file to the server. This differs from L</stor> in that the ftp server is required to store the file in a unique way. This uses the
+"upload" command flow explained in L</Complex Commands>!
+
+Arguments: the filename to put
+
+=head3 put
+
+An alias for L</stor>
 
 =head1 TLS support
 
