@@ -404,7 +404,7 @@ foreach my $cmd ( @complex_commands ) {
 		} );
 		if ( $cmd =~ /^(?:ls|dir|list|nlst)$/ ) {
 			$self->prepare_listing;
-		} elsif ( $cmd =~ /^(?:get|put|retr|stor)$/ ) {
+		} elsif ( $cmd =~ /^(?:get|put|retr|stor|stou)$/ ) {
 			$self->prepare_transfer;
 		}
 
@@ -451,7 +451,7 @@ sub start_data_connection {
 }
 
 # build our data complex command handlers
-foreach my $cmd ( qw( put stor ) ) {
+foreach my $cmd ( qw( put stor stou ) ) {
 	event "${cmd}_data" => sub {
 		my( $self, $input ) = @_;
 
@@ -1435,6 +1435,12 @@ Prints the current working directory.
 
 Arguments: none
 
+=head3 rename
+
+Renames a target file to a new name.
+
+Arguments: the old filename and the new filename
+
 =head3 quit
 
 Disconnects from the ftp server. Behaves differently depending on the context when this command is received. After this command is sent, this
@@ -1546,6 +1552,11 @@ Arguments: the option to set
 =head3 options
 
 An alias for L</opts>
+
+=head2 Complex Commands
+
+This class of commands is called complex because they require opening a new data connection to the server. The requested data is transferred
+over this connection, and the result is sent back to your session.
 
 =head1 TLS support
 
