@@ -13,50 +13,6 @@ use POE::Driver::SysRW;
 
 use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 
-# list of things that is unimplemented
-# * full TLS support - check the RFCs
-# * FXP ( server<->server ) transfers
-# * intelligent NAT detection
-# * full ipv6 testing/support
-# * restart/abort of a transfer
-# * sending STAT while a complex command is in progress
-# * manual control of PORT/PASV/TYPE - maybe unnecessary?
-# RFC 959:
-# * REIN ( tricky to implement, as it messes with state )
-# * STRU ( default file type is always a good idea )
-# * MODE ( default stream type is always a good idea )
-# * APPE ( should be easy to implement, but im lazy )
-# * ALLO ( probably easy to implement, but it is generally unused? )
-# * REST ( a bit tricky to implement, maybe later )
-# * ABOR ( tricky to implement, as it messes with state )
-# RFC 2228:
-# * AUTH ( only AUTH TLS is supported now )
-# * PROT/PBSZ is supported with the default options
-# * ADAT ( not needed for AUTH TLS? )
-# * CCC ( not needed with TLS? )
-# * MIC ( not needed with TLS? )
-# * CONF ( not needed with TLS? )
-# * ENC ( not needed with TLS? )
-# RFC 2389:
-# * FEAT ( no formal parser but we can send the command )
-# RFC 2428:
-# * EPRT
-# * EPSV
-# RFC 2577:
-# * the entire thing :)
-# RFC 2640:
-# * the entire thing :)
-# RFC 2773:
-# * the entire thing :)
-# RFC 3659:
-# * REST ( same reason as the RFC 959 one )
-# * MLST
-# * MLSD
-# RFC 4217:
-# * the entire thing except for what is implemented in 2228 :)
-# RFC 5795:
-# * the entire thing :)
-
 BEGIN {
 
 =func DEBUG
@@ -322,15 +278,6 @@ has _master => (
 	init_arg => undef,
 );
 
-# helper sub to simplify sending events to the master
-sub tell_master {
-	my( $self, $event, @args ) = @_;
-
-	warn "telling master about event $event\n" if DEBUG;
-
-	$poe_kernel->post( $self->_master, $event, @args );
-}
-
 # the internal state of the connection
 has state => (
 	isa => 'Str',
@@ -394,6 +341,14 @@ my @complex_commands = ( qw(
 	stor stou put
 ) );
 
+# a simple command that forces shutdown
+event shutdown => sub {
+	my $self = shift;
+
+	$self->_shutdown;
+	return;
+};
+
 # build our "simple" command handlers
 foreach my $cmd ( @simple_commands ) {
 	event $cmd => sub {
@@ -402,6 +357,12 @@ foreach my $cmd ( @simple_commands ) {
 
 		# ignore commands if we are shutting down
 		return if $self->state eq 'shutdown';
+
+		# special-case the quit/disconnect methods
+		if ( $cmd =~ /^(?:quit|disconnect)$/ ) {
+			$self->_shutdown;
+			return;
+		}
 
 		# are we already sending a command?
 		if ( $self->state ne 'idle' ) {
@@ -449,6 +410,44 @@ foreach my $cmd ( @complex_commands ) {
 
 		return;
 	};
+}
+
+sub prepare_listing {
+	my $self = shift;
+
+	# do we need to set the TYPE?
+	if ( ! $self->_has_data_type or $self->data_type eq 'I' ) {
+		$self->command_data->{'type'} = 'A';
+		$self->command( 'complex_type', 'TYPE', 'A' );
+	} else {
+		# Okay, proceed to start the data connection stuff
+		$self->start_data_connection;
+	}
+}
+
+sub prepare_transfer {
+	my $self = shift;
+
+	# do we need to set the TYPE?
+	if ( ! $self->_has_data_type or $self->data_type eq 'A' ) {
+		$self->command_data->{'type'} = 'I';
+		$self->command( 'complex_type', 'TYPE', 'I' );
+	} else {
+		# Okay, proceed to start the data connection stuff
+		$self->start_data_connection;
+	}
+}
+
+sub start_data_connection {
+	my $self = shift;
+
+	# okay, we go ahead with the PASV/PORT command
+	if ( $self->connection_mode eq 'passive' ) {
+		$self->command( 'complex_pasv', 'PASV' );
+	} else {
+		# Okay, create our listening socket
+		$self->create_data_connection;
+	}
 }
 
 # build our data complex command handlers
@@ -513,96 +512,6 @@ foreach my $cmd ( qw( put stor ) ) {
 	};
 }
 
-# rename support
-event rename => sub {
-	my( $self, $from, $to ) = @_;
-
-	# ignore commands if we are shutting down
-	return if $self->state eq 'shutdown';
-
-	# are we already sending a command?
-	if ( $self->state ne 'idle' ) {
-		die "Unable to send 'rename' because we are processing " . $self->state;
-	}
-
-	# Start the rename!
-	$self->command_data( {
-		from => $from,
-		to => $to,
-	} );
-	$self->command( 'rename_start', 'RNFR', $from );
-
-	return;
-};
-
-sub _ftpd_rename_start {
-	my( $self, $code, $reply ) = @_;
-
-	if ( code_intermediate( $code ) ) {
-		# TODO should we send a rename_partial event?
-		$self->command( 'rename_done', 'RNTO', $self->command_data->{'to'} );
-	} else {
-		$self->tell_master( 'rename_error', $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
-		$self->command_data( undef );
-		$self->state( 'idle' );
-	}
-}
-
-sub _ftpd_rename_done {
-	my( $self, $code, $reply ) = @_;
-
-	my $event = 'rename';
-	if ( ! code_success( $code ) ) {
-		$event .= '_error';
-	}
-	$self->tell_master( $event, $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
-
-	$self->command_data( undef );
-	$self->state( 'idle' );
-}
-
-sub prepare_listing {
-	my $self = shift;
-
-	# do we need to set the TYPE?
-	if ( ! $self->_has_data_type or $self->data_type eq 'I' ) {
-		$self->command_data->{'type'} = 'A';
-		$self->command( 'complex_type', 'TYPE', 'A' );
-	} else {
-		# Okay, proceed to start the data connection stuff
-		$self->start_data_connection;
-	}
-}
-
-sub prepare_transfer {
-	my $self = shift;
-
-	# do we need to set the TYPE?
-	if ( ! $self->_has_data_type or $self->data_type eq 'A' ) {
-		$self->command_data->{'type'} = 'I';
-		$self->command( 'complex_type', 'TYPE', 'I' );
-	} else {
-		# Okay, proceed to start the data connection stuff
-		$self->start_data_connection;
-	}
-}
-
-sub start_data_connection {
-	my $self = shift;
-
-	# okay, we go ahead with the PASV/PORT command
-	if ( $self->connection_mode eq 'passive' ) {
-		$self->command( 'complex_pasv', 'PASV' );
-	} else {
-		# Okay, create our listening socket
-		$self->create_data_connection;
-	}
-}
-
-event _child => sub {
-	return;
-};
-
 sub BUILD {
 	my $self = shift;
 
@@ -656,28 +565,14 @@ sub START {
 	return;
 }
 
-event timeout_event => sub {
-	my $self = shift;
+# helper sub to simplify sending events to the master
+sub tell_master {
+	my( $self, $event, @args ) = @_;
 
-	# Okay, we timed out doing something
-	if ( $self->state eq 'connect' ) {
-		# failed to connect to the server
-		$self->tell_master( 'connect_error', 0, 'timedout' );
+	warn "telling master about event $event\n" if DEBUG;
 
-		# nothing else to do...
-		$self->_shutdown;
-	} elsif ( $self->state eq 'complex_sf' ) {
-		# timed out waiting for the data connection
-
-		# since this is a pre-data-connection error, the complex command is done
-		$self->process_complex_error( 0, 'timedout' );
-		$self->state( 'idle' );
-	} else {
-		die "unknown state in timeout_event: " . $self->state;
-	}
-
-	return;
-};
+	$poe_kernel->post( $self->_master, $event, @args );
+}
 
 # shutdown the connection
 sub _shutdown {
@@ -715,6 +610,33 @@ sub yield {
 	my( $self, @args ) = @_;
 	$poe_kernel->post( $self->get_session_id, @args );
 }
+
+event _child => sub {
+	return;
+};
+
+event timeout_event => sub {
+	my $self = shift;
+
+	# Okay, we timed out doing something
+	if ( $self->state eq 'connect' ) {
+		# failed to connect to the server
+		$self->tell_master( 'connect_error', 0, 'timedout' );
+
+		# nothing else to do...
+		$self->_shutdown;
+	} elsif ( $self->state eq 'complex_sf' ) {
+		# timed out waiting for the data connection
+
+		# since this is a pre-data-connection error, the complex command is done
+		$self->process_complex_error( 0, 'timedout' );
+		$self->state( 'idle' );
+	} else {
+		die "unknown state in timeout_event: " . $self->state;
+	}
+
+	return;
+};
 
 event cmd_sf_connected => sub {
 	my( $self, $fh, $host, $port, $wheel_id ) = @_;
@@ -1294,6 +1216,54 @@ event data_rw_flushed => sub {
 	return;
 };
 
+# rename support
+event rename => sub {
+	my( $self, $from, $to ) = @_;
+
+	# ignore commands if we are shutting down
+	return if $self->state eq 'shutdown';
+
+	# are we already sending a command?
+	if ( $self->state ne 'idle' ) {
+		die "Unable to send 'rename' because we are processing " . $self->state;
+	}
+
+	# Start the rename!
+	$self->command_data( {
+		from => $from,
+		to => $to,
+	} );
+	$self->command( 'rename_start', 'RNFR', $from );
+
+	return;
+};
+
+sub _ftpd_rename_start {
+	my( $self, $code, $reply ) = @_;
+
+	if ( code_intermediate( $code ) ) {
+		# TODO should we send a rename_partial event?
+		$self->command( 'rename_done', 'RNTO', $self->command_data->{'to'} );
+	} else {
+		$self->tell_master( 'rename_error', $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
+		$self->command_data( undef );
+		$self->state( 'idle' );
+	}
+}
+
+sub _ftpd_rename_done {
+	my( $self, $code, $reply ) = @_;
+
+	my $event = 'rename';
+	if ( ! code_success( $code ) ) {
+		$event .= '_error';
+	}
+	$self->tell_master( $event, $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
+
+	$self->command_data( undef );
+	$self->state( 'idle' );
+}
+
 no MooseX::POE::SweetArgs;
 __PACKAGE__->meta->make_immutable;
 1;
@@ -1307,17 +1277,347 @@ __PACKAGE__->meta->make_immutable;
 =head1 SYNOPSIS
 
 	# A simple FTP client logging in to a server
+	use POE::Component::Client::SimpleFTP;
+
+	POE::Session->create(
+		inline_states => {
+			_start => sub {
+				POE::Component::Client::SimpleFTP->new(
+					alias => "ftp",
+					remote_addr => "invalid.addr",
+					username => "myuser",
+					password => "mypassword",
+				);
+				return;
+			},
+			authenticated => sub {
+				print "LOGGED ON!\n";
+				$_[KERNEL]->post( "ftp", "quit" );
+				return;
+			}
+		},
+	);
+	POE::Kernel->run;
 
 =head1 DESCRIPTION
 
-This is a simple FTP client to use in a POE application. It's a complete rewrite of the old L<POE::Component::Client::FTP> codebase and
-adds a lot of convenience functions. Most of the API is compatible, so you should have few problems porting your code to this module.
+This is a simple FTP client to use in a POE application. It's a complete rewrite of the old L<POE::Component::Client::FTP> codebase and makes
+it easier to use. Most of the API/event flow is compatible, so you should have few problems porting your code to this module.
+
+You start by creating the ftp object and wait for it to send you events. By default the caller session will get all the events directed to it,
+no need to "register" for events or anything like that. Events are sent to you in the generic form of C<$command> or C<${command}_error> events.
+This module will parse the FTP reply codes and determine if it is an error or not, and dispatch it to the appropriate event.
+
+An important thing to keep in mind is that there is no command queueing done in this module. It is up to the user to know what state they are
+in and to dispatch events at the right time. If a command is sent while this module is processing one, an exception will be thrown. Fortunately,
+due to the way events are named, it should be easy to keep track of the event flow.
+
+=head2 Initial Connection
+
+When the object is created, it attempts to make a connection to the server specified in the attributes. It will automatically login with the
+provided credentials. Additionally, it will enable TLS mode if you enabled the attributes L</tls_cmd> and L</tls_data>. There is a timeout timer
+on the initial connection that you can tweak via setting L</timeout>.
+
+The following events may be sent to your session:
+
+=head3 authenticated
+
+This event is sent when the entire login procedure is done. At this point you can send commands to the server.
+
+No arguments.
+
+=head3 connect_error
+
+This event is sent when there's an error connecting to the server. The component will automatically destroy itself at this point, so if you
+want to retry the connection, you have to make a new object.
+
+The first argument is the error code, and the 2nd argument is the error string.
+
+Example args: 0, "timedout"
+
+=head3 login_error
+
+This event is sent when there's an error trying to login to the server. The component will automatically destroy itself at this point, so if you
+want to retry the connection, you have to make a new object.
+
+The first argument is the error code, and the 2nd argument is the error string.
+
+Example args: 530, "Login incorrect."
+
+=head2 Simple Commands
+
+This is a class of commands that can be sent to the server after receiving the L</authenticated> event. They perform identically, and will send
+the same replies back to your session. Some commands require arguments, others don't.
+
+Normally the events will include at least 2 arguments: the FTP return code and the actual reply line from the server. If the command included
+arguments, it will be supplied in the event to make identifying actions easier.
+
+Some commands is an alias for the actual command ( cd vs cwd ) but the event name will follow the aliased command. If a cwd event is sent, the
+error event is C<cwd_error>. If a cd event is sent, the error event is C<cd_error>.
+
+	# send the cd command in an event handler somewhere
+	$ftp->yield( 'cd', '/foobar' );
+
+	# handler for the resulting event received from this component
+	sub cd {
+		my( $code, $reply, $path ) = @_[ ARG0 .. ARG2 ];
+
+		# $code probably is 250
+		# $reply probably is "Directory successfully changed."
+		# $path will be "/foobar"
+	}
+
+	sub cd_error {
+		my( $code, $reply, $path ) = @_[ ARG0 .. ARG2 ];
+
+		# $code probably is 550
+		# $reply probably is "Failed to change directory."
+		# $path will be "/foobar"
+	}
+
+=head3 cwd
+
+Changes the working directory.
+
+Arguments: the path to change to ( required )
+
+=head3 cd
+
+An alias for L</cwd>
+
+=head3 dele
+
+Deletes a file.
+
+Arguments: the file to delete ( required )
+
+=head3 delete
+
+An alias for L</dele>
+
+=head3 mkd
+
+Creates a directory.
+
+Arguments: the directory path to create ( required )
+
+You can supply an absolute path or a relative path. It is up to the server to figure out where to create the directory. It's easier to use
+absolute paths so you are sure that the server is creating the directory in the right place!
+
+Remember, the FTP protocol doesn't support recursive directory creation! If C</foo> exists but C</foo/bar> doesn't, then you cannot create
+C</foo/bar/baz>!
+
+=head3 mkdir
+
+An alias for L</mkd>
+
+=head3 rmd
+
+Removes a directory.
+
+Arguments: the directory path to delete ( required )
+
+You can supply an absolute path or a relative path. It is up to the server to figure out where to create the directory. It's easier to use
+absolute paths so you are sure that the server is creating the directory in the right place!
+
+Remember, the FTP protocol doesn't support deleting a directory if it has contents in it! If C</foo/bar> exists then you cannot delete
+C</foo>!
+
+=head3 cdup
+
+Changes the working directory to the parent.
+
+Arguments: none
+
+=head3 pwd
+
+Prints the current working directory.
+
+Arguments: none
+
+=head3 quit
+
+Disconnects from the ftp server. Behaves differently depending on the context when this command is received. After this command is sent, this
+module will destroy itself and not send any more events to your session.
+
+If this module isn't processing anything it will send the QUIT command and gracefully shutdown when it receives the server reply.
+
+If this module is processing a command it will disconnect immediately, killing any command processing/data transfers that is happening.
+
+If you want to force immediate shutdown, use the L</shutdown> event.
+
+Arguments: none
+
+=head3 disconnect
+
+An alias for L</quit>
+
+=head3 shutdown
+
+Forces a shutdown of the component and kills everything.
+
+Arguments: none
+
+=head3 noop
+
+Executes a no-operation command. Useful to keep the connection open or to get the round-trip latency, or whatever :)
+
+Arguments: none
+
+=head3 quot
+
+Sends a quoted command to the server. Useful for sending commands that this module doesn't support.
+
+Arguments: the actual command + arguments to send.
+
+	$ftp->yield( 'quot', 'CRAZYCMD', @crazy_args );
+
+=head3 quote
+
+An alias for L</quot>
+
+=head3 help
+
+Gets the server's help output for a command.
+
+Arguments: optional command to ask for help
+
+=head3 site
+
+Executes a specific command that the server supports. Consult your ftp administrator or the document for the ftp software for more information.
+
+Arguments: the command to execute + any optional arguments.
+
+=head3 stat
+
+Receives some informational text about the current status of the ftp connection.
+
+BEWARE: While the RFC says this command can be sent while a data transfer is in progress, this is unimplemented!
+
+Arguments: none
+
+=head3 syst
+
+Gets the system information of the ftp server. Usually returns something like C<UNIX Type: L8>.
+
+Arguments: none
+
+=head3 acct
+
+Send the account information for your login. Generally not used, but if your ftp requires it you should send this immediately after getting the
+L</authenticated> event.
+
+Arguments: your account information
+
+=head3 smnt
+
+Mounts a different filesystem volume on your account. Generally not used.
+
+Arguments: a pathname to mount or system-specific string
+
+=head3 mdtm
+
+Gets the modification time of a file in UNIX timestamp format. Not supported by all servers! ( RFC 3659 )
+
+Arguments: the file to query
+
+=head3 size
+
+Gets the size of a file in bytes. Not supported by all servers! ( RFC 3659 )
+
+Arguments: the file to query
+
+=head3 feat
+
+Queries the FEAT capabilities of the server. Not supported by all servers! ( RFC 2389 )
+
+Arguments: none
+
+=head3 features
+
+An alias for L</feat>
+
+=head3 opts
+
+Sets an option for the current session. Not supported by all servers! ( RFC 2389 )
+
+Arguments: the option to set
+
+=head3 options
+
+An alias for L</opts>
 
 =head1 TLS support
 
 TLS encryption is available if you want. You would need to enable the L</tls_cmd> and L</tls_data> attributes and have L<POE::Component::SSLify>
-installed in order to use it. It will work with a lot of servers and commands. However, not the entire RFC is implemented! The relevant RFCs is
-L<http://tools.ietf.org/html/rfc4217> and L<http://tools.ietf.org/html/rfc2228>. If you encounter problems when using TLS on a server, please
-let me know by filing a bug report!
+installed in order to use it. It should work with a lot of servers and commands. However, not the entire specification is implemented!
+If you encounter problems when using TLS on a server, please let me know by filing a bug report!
+
+=head1 Unimplemented Commands/Actions/Features
+
+Those are the ideas that probably will be implemented in a future version. Some of them require core changes to this module, while others
+can be done in user-space but should be implemented here to make it "simpler" :)
+
+	* full TLS support - check the RFCs
+	* FXP ( server<->server ) transfers
+	* intelligent NAT detection
+	* full ipv6 compatibility
+	* restart/abort/append a transfer
+	* sending STAT while a complex command is in progress
+	* manual control of PORT/PASV/TYPE - maybe unnecessary?
+	* bandwidth throttling for data connection
+	* support for "mkdir -p" where this module automatically creates all directories needed
+	* passing a filename/filehandle/whatever to put/get so this module automatically does the reading/writing
+	* directory mirroring ( ala rsync )
+
+=head2 RFC 959 "FILE TRANSFER PROTOCOL (FTP)"
+
+	* REIN ( tricky to implement, as it messes with state )
+	* STRU ( default file type is always a good idea )
+	* MODE ( default stream type is always a good idea )
+	* APPE ( should be easy to implement, but im lazy )
+	* ALLO ( probably easy to implement, but it is generally unused? )
+	* REST ( a bit tricky to implement, maybe later )
+	* ABOR ( tricky to implement, as it messes with state )
+	* PASV ( this module automatically does it )
+	* PORT ( this module automatically does it )
+	* TYPE ( this module automatically does it )
+
+=head2 RFC 2228 "FTP Security Extensions"
+
+	* AUTH ( only AUTH TLS is supported now )
+	* PROT/PBSZ is supported with the default options if you enable tls_cmd/tls_data
+	* ADAT ( not needed for AUTH TLS? )
+	* CCC ( not needed with TLS? )
+	* MIC ( not needed with TLS? )
+	* CONF ( not needed with TLS? )
+	* ENC ( not needed with TLS? )
+
+=head2 RFC 2389 "Feature negotiation mechanism for the File Transfer Protocol"
+
+	* FEAT ( no formal parser but we can send the command )
+
+=head2 RFC 2428 "FTP Extensions for IPv6 and NATs"
+
+	* EPRT
+	* EPSV
+
+=head2 RFC 2577 "FTP Security Considerations"
+
+	* the entire thing :)
+
+=head2 RFC 2640 "Internationalization of the File Transfer Protocol"
+
+	* the entire thing :)
+
+=head2 RFC 3659 "Extensions to FTP"
+
+	* REST ( same reason as the RFC 959 one )
+	* MLST
+	* MLSD
+
+=head2 RFC 4217 "Securing FTP with TLS"
+
+	* the entire thing except for what is implemented in 2228 :)
 
 =cut
