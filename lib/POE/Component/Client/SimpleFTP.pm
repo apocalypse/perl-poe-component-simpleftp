@@ -1612,7 +1612,7 @@ Arguments: the file to query
 Example code: 213
 Example reply: 20110502230157
 
-You can use the L<POE::Component::Client::SimpleFTP::Utils/mdtm_datetime> function to convert it into a L<DateTime> object.
+You can use the L<POE::Component::Client::SimpleFTP::Utils/mdtm_parser> function to convert it into a L<DateTime> object.
 
 =head3 size
 
@@ -1642,6 +1642,8 @@ Example reply:
 	TVFS
 	UTF8
 	End
+
+You can use the L<POE::Component::Client::SimpleFTP::Utils/feat_parser> function to convert it into an array of features.
 
 =head3 features
 

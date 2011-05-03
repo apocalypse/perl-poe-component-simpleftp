@@ -3,8 +3,9 @@ Revision history for Perl module {{$dist->name}}
 {{$NEXT}}
 
 	Add missing documentation for the rmdir command
-	Add mdtm_datetime parser for the MDTM command
-	Add a small test for the ::Utils module
+	Add mdtm_parser to ::Utils for the MDTM command
+	Add feat_parser to ::Utils for the FEAT command
+	Add a test for the ::Utils module
 	Improve the pod for commands with sample data
 	Fix multi-line parsing logic so it correctly includes the first/last lines of the reply
 

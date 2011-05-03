@@ -1,9 +1,10 @@
 #!/usr/bin/perl
 
-use POE::Component::Client::SimpleFTP::Utils qw( :code mdtm_datetime );
+use POE::Component::Client::SimpleFTP::Utils qw( :code mdtm_parser feat_parser );
 use Test::More;
+use Test::Deep;
 
-plan tests => 31 + 5 + 6;
+plan tests => 53;
 
 # test the code_* subs
 ok( ! code_preliminary( undef ), "undef is not preliminary" );
@@ -42,13 +43,37 @@ ok( ! code_tls( 235235 ), "non-xxx is not tls" );
 ok( ! code_tls( 500 ), "non-6xx is not tls" );
 ok( code_tls( 658 ), "6xx is tls" );
 
-# test the mdtm_datetime parser
+# test the mdtm_parser stuff
 foreach my $bad ( qw( undef asdf 258sd 1359448 2345.234.234 ) ) {
-	my $result = mdtm_datetime( $bad );
+	my $result = mdtm_parser( $bad );
 	ok( ! $result, "$bad is not valid MDTM" );
 }
 foreach my $good ( qw( 20110502230157 20110502230157.5 20110502230157.324524 ) ) {
-	my $result = mdtm_datetime( $good );
+	my $result = mdtm_parser( $good );
 	ok( defined $result, "$good is valid MDTM" );
 	is( $result->epoch, 1304377317, "$good contains the right UNIX epoch" );
+}
+
+# test the feat_parser stuff
+my @bad_feat = (
+	'asdf',
+	'FOO BAR BAZ',
+	'foo\n',
+	"foo\n",
+	"\nfoo",
+);
+foreach my $bad ( @bad_feat ) {
+	my @result = feat_parser( $bad );
+	is( scalar @result, 0, "is not valid FEAT" );
+}
+
+my @good_feat = (
+	[ "\nFOO\nBAR\nend", [ 'FOO', 'BAR' ] ],
+	[ "Features:\nFOO\nBAR\nEnd", [ 'FOO', 'BAR' ] ],
+	[ "Features:\n     FOO\nBAR     \n   BAZ  \nEnd", [ 'FOO', 'BAR', 'BAZ' ] ],
+);
+foreach my $good ( @good_feat ) {
+	my @result = feat_parser( $good->[0] );
+	ok( scalar @result > 0, "is valid FEAT" );
+	cmp_deeply( \@result, $good->[1], "got expected FEAT list" );
 }

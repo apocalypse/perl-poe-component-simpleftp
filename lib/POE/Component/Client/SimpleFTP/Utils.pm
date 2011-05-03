@@ -5,7 +5,8 @@ package POE::Component::Client::SimpleFTP::Utils;
 use parent 'Exporter';
 our @EXPORT_OK = qw(
 	code_preliminary code_success code_intermediate code_failure code_tls
-	EOL mdtm_datetime
+	EOL
+	mdtm_parser feat_parser
 );
 our %EXPORT_TAGS = (
 	'code' => [
@@ -66,7 +67,7 @@ Returns the end-of-line terminator as specified in RFC 959
 
 sub EOL () { "\015\012" }
 
-=func mdtm_datetime
+=func mdtm_parser
 
 Returns a L<DateTime> object representing the modification timestamp of a file. Useful for parsing L<POE::Component::Client::SimpleFTP/mdtm> replies!
 
@@ -76,7 +77,7 @@ On an error returns undef.
 
 =cut
 
-sub mdtm_datetime {
+sub mdtm_parser {
 	my $mdtm = shift;
 
 	# check to see if we received microseconds
@@ -102,6 +103,39 @@ sub mdtm_datetime {
 	} else {
 		return undef;
 	}
+}
+
+=func feat_parser
+
+Returns an array of FEAT capabilities present on the server. Useful for parsing L<POE::Component::Client::SimpleFTP/feat> replies!
+
+On an error returns an empty array.
+
+=cut
+
+sub feat_parser {
+	my $feat = shift;
+
+	# validation
+	return () if ! defined $feat;
+	return () if ! length( $feat );
+
+	# it should be a string with newlines in it separating the FEAT replies
+	my @data = split( "\n", $feat );
+	return () if scalar @data <= 1;
+
+	# remove the first/last elements as they are informational text
+	shift @data;
+	pop @data;
+
+	# remove any whitespace
+	foreach my $f ( @data ) {
+		$f =~ s/^\s+//;
+		$f =~ s/\s+$//;
+	}
+
+	# all done!
+	return @data;
 }
 
 1;
