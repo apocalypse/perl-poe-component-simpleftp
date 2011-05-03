@@ -21,7 +21,7 @@ use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 # * restart/abort of a transfer
 # * sending STAT while a complex command is in progress
 # * manual control of PORT/PASV/TYPE - maybe unnecessary?
-# RFC 959 commands:
+# RFC 959:
 # * REIN ( tricky to implement, as it messes with state )
 # * STRU ( default file type is always a good idea )
 # * MODE ( default stream type is always a good idea )
@@ -29,7 +29,7 @@ use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 # * ALLO ( probably easy to implement, but it is generally unused? )
 # * REST ( a bit tricky to implement, maybe later )
 # * ABOR ( tricky to implement, as it messes with state )
-# RFC 2228 commands:
+# RFC 2228:
 # * AUTH ( only AUTH TLS is supported now )
 # * PROT/PBSZ is supported with the default options
 # * ADAT ( not needed for AUTH TLS? )
@@ -37,17 +37,24 @@ use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
 # * MIC ( not needed with TLS? )
 # * CONF ( not needed with TLS? )
 # * ENC ( not needed with TLS? )
-# RFC 2389 commands:
+# RFC 2389:
 # * FEAT ( no formal parser but we can send the command )
-# RFC 2640 commands:
+# RFC 2428:
+# * EPRT
+# * EPSV
+# RFC 2577:
 # * the entire thing :)
-# RFC 2773 commands:
+# RFC 2640:
 # * the entire thing :)
-# RFC 3659 commands:
-# * REST
+# RFC 2773:
+# * the entire thing :)
+# RFC 3659:
+# * REST ( same reason as the RFC 959 one )
 # * MLST
 # * MLSD
-# RFC 5795 commands:
+# RFC 4217:
+# * the entire thing except for what is implemented in 2228 :)
+# RFC 5795:
 # * the entire thing :)
 
 BEGIN {
@@ -376,6 +383,7 @@ my @simple_commands = ( qw(
 	quot quote
 	quit disconnect
 	feat features
+	opts options
 ) );
 
 my @complex_commands = ( qw(
