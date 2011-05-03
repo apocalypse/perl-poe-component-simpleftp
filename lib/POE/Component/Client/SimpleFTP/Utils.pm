@@ -101,7 +101,7 @@ sub mdtm_parser {
 		}
 		return $dt;
 	} else {
-		return undef;
+		return;
 	}
 }
 
