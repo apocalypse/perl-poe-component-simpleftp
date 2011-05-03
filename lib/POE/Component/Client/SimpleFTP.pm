@@ -712,7 +712,7 @@ event cmd_rw_input => sub {
 		if ( length $minus ) {
 			# begin of multi-line reply
 			warn "begin of multi-line($code): '$string'\n" if DEBUG;
-			$self->input_buffer( '' );
+			$self->input_buffer( $string );
 			$self->input_buffer_code( $code );
 			return;
 		} else {
@@ -723,7 +723,7 @@ event cmd_rw_input => sub {
 					die "ftpd sent invalid reply: $input";
 				} else {
 					warn "end of multi-line: '$string'\n" if DEBUG;
-					$line = $self->input_buffer;
+					$line = $self->input_buffer . "\n" . $input;
 					$self->input_buffer( undef );
 				}
 			} else {
@@ -736,11 +736,7 @@ event cmd_rw_input => sub {
 			# per the RFC, the first character should be padded by a space if needed
 			$input =~ s/^\s//;
 			warn "got multi-line input: '$input'\n" if DEBUG;
-			if ( length( $self->input_buffer ) ) {
-				$self->input_buffer( $self->input_buffer . "\n" . $input );
-			} else {
-				$self->input_buffer( $input );
-			}
+			$self->input_buffer( $self->input_buffer . "\n" . $input );
 			return;
 		} else {
 			die "ftpd sent invalid reply: $input";
@@ -1540,10 +1536,12 @@ Arguments: optional command to ask for help
 Example code: 214
 Example reply:
 
+	The following commands are recognized.
 	ABOR ACCT ALLO APPE CDUP CWD  DELE EPRT EPSV FEAT HELP LIST MDTM MKD
 	MODE NLST NOOP OPTS PASS PASV PORT PWD  QUIT REIN REST RETR RMD  RNFR
 	RNTO SITE SIZE SMNT STAT STOR STOU STRU SYST TYPE USER XCUP XCWD XMKD
 	XPWD XRMD
+	Help OK.
 
 =head3 site
 
@@ -1565,6 +1563,7 @@ Arguments: none
 Example code: 211
 Example reply:
 
+	FTP server status:
 	Connected to 192.168.0.199
 	Logged in as apoc
 	TYPE: ASCII
@@ -1574,6 +1573,7 @@ Example reply:
 	Data connections will be plain text
 	At session startup, client count was 1
 	vsFTPd 2.2.0 - secure, fast, stable
+	End of status
 
 =head3 syst
 
@@ -1632,6 +1632,7 @@ Arguments: none
 Example code: 211
 Example reply:
 
+	Features:
 	EPRT
 	EPSV
 	MDTM
@@ -1640,6 +1641,7 @@ Example reply:
 	SIZE
 	TVFS
 	UTF8
+	End
 
 =head3 features
 
@@ -1801,6 +1803,7 @@ can be done in user-space but should be implemented here to make it "simpler" :)
 	* use POE::Filter::Ls for parsing ( need to improve it first hah )
 	* encoded pathnames ( translate \012 in filename to \000 as per RFC 959 )
 	* security stuff - http://cr.yp.to/ftp/security.html
+	* event prefix ( so you get ftp_cd events instead of cd ) for easier event management
 
 =head2 RFC 959 "FILE TRANSFER PROTOCOL (FTP)"
 

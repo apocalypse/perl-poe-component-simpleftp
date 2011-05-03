@@ -6,6 +6,7 @@ Revision history for Perl module {{$dist->name}}
 	Add mdtm_datetime parser for the MDTM command
 	Add a small test for the ::Utils module
 	Improve the pod for commands with sample data
+	Fix multi-line parsing logic so it correctly includes the first/last lines of the reply
 
 0.001
 	Released: 2011-05-03 06:13:35 UTC
