@@ -50,6 +50,18 @@ has file => (
 	required => 1,
 );
 
+has passive => (
+	isa => 'Bool',
+	is => 'ro',
+	default => 1,
+);
+
+has local_addr => (
+	isa => 'Str',
+	is => 'ro',
+	default => '0.0.0.0',
+);
+
 # our ftp object
 has ftp => (
 	traits => ['NoGetopt'],
@@ -65,8 +77,10 @@ sub START {
 	$self->ftp( POE::Component::Client::SimpleFTP->new(
 		remote_addr => $self->hostname,
 		remote_port => $self->port,
+		local_addr => $self->local_addr,
 		username => $self->username,
 		password => $self->password,
+		( $self->passive ? ( connection_mode => 'passive' ) : ( connection_mode => 'active' ) ),
 		( $self->usetls ? ( tls_cmd => 1, tls_data => 1 ) : () ),
 	) );
 

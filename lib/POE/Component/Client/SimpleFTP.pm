@@ -612,6 +612,12 @@ sub BUILD {
 		die "Please specify different local_port and local_data_port settings!";
 	}
 
+	# In order to use active mode connection, we MUST provide a local IP address to bind
+	# otherwise getsockname() on INADDR_ANY unsurprisingly returns 0.0.0.0 which is worthless for the PORT command!
+	if ( $self->connection_mode eq 'active' and $self->local_addr eq '0.0.0.0' ) {
+		die "Please specify a local_addr address to bind to for active connections!";
+	}
+
 	# Figure out who called us so we store it for events
 	$self->_master( $poe_kernel->get_active_session->ID );
 }
@@ -1000,8 +1006,8 @@ sub _ftpd_complex_port {
 	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
-		# wait for the server to connect to us
-		$self->state( 'complex_sf' );
+		# now, send the actual complex command :)
+		$self->process_complex_command;
 	} else {
 		# since this is a pre-data-connection error, the complex command is done
 		$self->process_complex_error( $code, $reply );
@@ -1045,8 +1051,7 @@ sub create_data_connection {
 		# TODO what if SF had an error binding to the socket?
 		my $socket = $self->data_sf->getsockname;
 		my( $port, $addr ) = sockaddr_in( $socket );
-		$addr = inet_ntoa( $addr );
-		$addr = "127.0.0.1" if $addr eq "0.0.0.0";
+		$addr = $self->local_addr; # TODO why won't getsockname give me the right ip????
 		my @addr = split( /\./, $addr );
 		my @port = ( int( $port / 256 ), $port % 256 );
 		$self->command( 'complex_port', 'PORT', join( ',', @addr, @port ) );
@@ -1087,7 +1092,18 @@ event data_sf_connected => sub {
 	# convert it into a readwrite wheel
 	$self->data_rw( POE::Wheel::ReadWrite->new( %rw_args ) );
 
-	# now, send the actual complex command :)
+	# do we need to send the actual command?
+	if ( $self->connection_mode eq 'passive' ) {
+		# now, send the actual complex command :)
+		$self->process_complex_command;
+	}
+
+	return;
+};
+
+sub process_complex_command {
+	my $self = shift;
+
 	my $cmd = $self->command_data->{'cmd'};
 
 	# do we need to translate the command?
@@ -1103,9 +1119,7 @@ event data_sf_connected => sub {
 	} else {
 		$self->command( 'complex_start', $cmd );
 	}
-
-	return;
-};
+}
 
 event data_sf_error => sub {
 	my( $self, $operation, $errnum, $errstr, $wheel_id ) = @_;
