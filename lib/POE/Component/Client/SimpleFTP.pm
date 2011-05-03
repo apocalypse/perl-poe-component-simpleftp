@@ -33,7 +33,7 @@ The default is: false
 
 The alias this component will use. You can send commands to the ftpd in 2 ways:
 
-	my $ftp = POE::Component::Client::SimpleFTP->new( ... );
+	my $ftp = POE::Component::Client::SimpleFTP->new( alias => "ftp", ... );
 	$poe_kernel->post( 'ftp', 'cd', 'foobar' );
 
 	# Or, you can use the yield sub:
@@ -1833,7 +1833,7 @@ can be done in user-space but should be implemented here to make it "simpler" :)
 
 =head2 RFC 2389 "Feature negotiation mechanism for the File Transfer Protocol"
 
-	* FEAT ( no formal parser but we can send the command )
+	* The entire RFC is implemented
 
 =head2 RFC 2428 "FTP Extensions for IPv6 and NATs"
 
@@ -1842,11 +1842,11 @@ can be done in user-space but should be implemented here to make it "simpler" :)
 
 =head2 RFC 2577 "FTP Security Considerations"
 
-	* the entire thing :)
+	* unimplemented
 
 =head2 RFC 2640 "Internationalization of the File Transfer Protocol"
 
-	* the entire thing :)
+	* unimplemented
 
 =head2 RFC 3659 "Extensions to FTP"
 
@@ -1856,6 +1856,10 @@ can be done in user-space but should be implemented here to make it "simpler" :)
 
 =head2 RFC 4217 "Securing FTP with TLS"
 
-	* the entire thing except for what is implemented in 2228 :)
+	* unimplemented except for what is implemented in 2228 :)
+
+=head2 RFC 5796 "FTP Command and Extension Registry"
+
+	* No need to implement this, it is for servers only
 
 =cut
