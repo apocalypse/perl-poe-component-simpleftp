@@ -11,7 +11,7 @@ use POE::Filter::Stream;
 use POE::Filter::Line;
 use POE::Driver::SysRW;
 
-use Socket qw( INADDR_ANY AF_INET SOCK_STREAM sockaddr_in inet_ntoa );
+use Socket qw( INADDR_ANY AF_INET SOCK_STREAM unpack_sockaddr_in inet_ntoa );
 
 BEGIN {
 
@@ -981,8 +981,13 @@ sub create_data_connection {
 	if ( $self->connection_mode eq 'active' ) {
 		# TODO what if SF had an error binding to the socket?
 		my $socket = $self->data_sf->getsockname;
-		my( $port, $addr ) = sockaddr_in( $socket );
-		$addr = $self->local_addr; # TODO why won't getsockname give me the right ip????
+		my( $port, $addr ) = unpack_sockaddr_in( $socket );
+
+		# TODO why won't getsockname give me the right ip????
+#		warn "GOT " . inet_ntoa( $addr ) . ":$port" if DEBUG;
+#		$addr = inet_ntoa( $addr ); ( always returns 0.0.0.0, but netstat shows it binding on the right ip! )
+		$addr = $self->local_addr;
+
 		my @addr = split( /\./, $addr );
 		my @port = ( int( $port / 256 ), $port % 256 );
 		$self->command( 'complex_port', 'PORT', join( ',', @addr, @port ) );
