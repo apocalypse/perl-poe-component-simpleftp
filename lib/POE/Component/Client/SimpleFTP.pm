@@ -925,6 +925,8 @@ sub _ftpd_complex_pasv {
 
 	if ( code_success( $code ) ) {
 		# Got the server's data!
+		# TODO the RFC is fuzzy about it, but can the port digit be negative?!?!
+		# http://cr.yp.to/ftp/retr.html
 		my @data = $reply =~ /(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/;
 		$self->command_data->{'ip'} = join '.', @data[0 .. 3];
 		$self->command_data->{'port'} = $data[4]*256 + $data[5];
@@ -1434,6 +1436,8 @@ C</foo>!
 
 Changes the working directory to the parent.
 
+Remember, there might be symlinks or other bizarre stuff going on behind the scenes! It's best to supply full pathnames to L</cwd> to be safe.
+
 Arguments: none
 
 =head3 pwd
@@ -1696,26 +1700,27 @@ can be done in user-space but should be implemented here to make it "simpler" :)
 	* intelligent NAT detection
 	* full ipv6 compatibility
 	* restart/abort/append a transfer
-	* sending STAT while a complex command is in progress
-	* manual control of PORT/PASV/TYPE - maybe unnecessary?
 	* bandwidth throttling for data connection
 	* support for "mkdir -p" where this module automatically creates all directories needed
 	* passing a filename/filehandle/whatever to put/get so this module automatically does the reading/writing
 	* directory mirroring ( ala rsync )
 	* use POE::Filter::Ls for parsing ( need to improve it first hah )
+	* encoded pathnames ( translate \012 in filename to \000 as per RFC 959 )
+	* security stuff - http://cr.yp.to/ftp/security.html
 
 =head2 RFC 959 "FILE TRANSFER PROTOCOL (FTP)"
 
-	* REIN ( tricky to implement, as it messes with state )
+	* REIN ( not allowed, as it generally screws up - just reconnect! )
 	* STRU ( default file type is always a good idea )
 	* MODE ( default stream type is always a good idea )
 	* APPE ( should be easy to implement, but im lazy )
-	* ALLO ( probably easy to implement, but it is generally unused? )
+	* ALLO ( it is generally unused and obsolete? )
 	* REST ( a bit tricky to implement, maybe later )
-	* ABOR ( tricky to implement, as it messes with state )
+	* ABOR ( not allowed, as it generally screws up - just disconnect! )
 	* PASV ( this module automatically does it )
 	* PORT ( this module automatically does it )
 	* TYPE ( this module automatically does it )
+	* STAT ( implemented, but not allowed while a transfer is in progress as it generally screws things up )
 
 =head2 RFC 2228 "FTP Security Extensions"
 
