@@ -412,6 +412,30 @@ foreach my $cmd ( @complex_commands ) {
 	};
 }
 
+# rename support
+foreach my $cmd ( qw( rename mv ) ) {
+	event $cmd => sub {
+		my( $self, $from, $to ) = @_;
+
+		# ignore commands if we are shutting down
+		return if $self->state eq 'shutdown';
+
+		# are we already sending a command?
+		if ( $self->state ne 'idle' ) {
+			die "Unable to send '$cmd' because we are processing " . $self->state;
+		}
+
+		# Start the rename!
+		$self->command_data( {
+			from => $from,
+			to => $to,
+		} );
+		$self->command( 'rename_start', 'RNFR', $from );
+
+		return;
+	};
+}
+
 sub prepare_listing {
 	my $self = shift;
 
@@ -1227,28 +1251,6 @@ event data_rw_flushed => sub {
 	return;
 };
 
-# rename support
-event rename => sub {
-	my( $self, $from, $to ) = @_;
-
-	# ignore commands if we are shutting down
-	return if $self->state eq 'shutdown';
-
-	# are we already sending a command?
-	if ( $self->state ne 'idle' ) {
-		die "Unable to send 'rename' because we are processing " . $self->state;
-	}
-
-	# Start the rename!
-	$self->command_data( {
-		from => $from,
-		to => $to,
-	} );
-	$self->command( 'rename_start', 'RNFR', $from );
-
-	return;
-};
-
 sub _ftpd_rename_start {
 	my( $self, $code, $reply ) = @_;
 
@@ -1454,6 +1456,12 @@ Arguments: none
 Renames a target file to a new name.
 
 Arguments: the old filename and the new filename
+
+Remember, the pathnames must exist and is a valid target. Best to send absolute paths!
+
+=head3 mv
+
+An alias for L</rename>
 
 =head3 quit
 
