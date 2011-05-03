@@ -2,5 +2,9 @@ Revision history for Perl module {{$dist->name}}
 
 {{$NEXT}}
 
+	Add missing documentation for the rmdir command
+
 0.001
 	Released: 2011-05-03 06:13:35 UTC
+
+	initial release

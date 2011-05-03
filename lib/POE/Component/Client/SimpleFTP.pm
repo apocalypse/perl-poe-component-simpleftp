@@ -1437,6 +1437,10 @@ absolute paths so you are sure that the server is creating the directory in the 
 Remember, the FTP protocol doesn't support deleting a directory if it has contents in it! If C</foo/bar> exists then you cannot delete
 C</foo>!
 
+=head3 rmdir
+
+An alias for L</rmd>
+
 =head3 cdup
 
 Changes the working directory to the parent.
