@@ -1271,12 +1271,13 @@ __PACKAGE__->meta->make_immutable;
 
 =for stopwords ftp
 
-=for Pod::Coverage command EOL START BUILD tell_master
+=for Pod::Coverage command EOL START BUILD tell_master create_data_connection prepare_listing prepare_tls_stuff prepare_transfer
+=for Pod::Coverage process_complex_closed process_complex_error start_data_connection
 
 =head1 SYNOPSIS
 
 	# A simple FTP client logging in to a server
-	use POE::Component::Client::SimpleFTP;
+	use POE qw( Component::Client::SimpleFTP );
 
 	POE::Session->create(
 		inline_states => {
