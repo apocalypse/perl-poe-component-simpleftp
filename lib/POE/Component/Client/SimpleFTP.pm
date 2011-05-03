@@ -372,6 +372,7 @@ my %command_map = (
 	'quote'		=> "QUOT",
 	'disconnect'	=> "QUIT",
 	'features'	=> "FEAT",
+	'options'	=> "OPTS",
 );
 
 my @simple_commands = ( qw(
