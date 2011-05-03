@@ -1562,15 +1562,19 @@ The typical flow of this command is as follows:
 	# receive a "get_connected" event
 	#	args is: "/myfile.txt"
 
+	# at this point you prepare to process the incoming data
+
 	# receive a "get_data" event
 	#	args is: $chunk, "/myfile.txt"
 
-	# at this point you should write out the data to the screen, a file, or whatever!
+	# at this point you should write out the data to the terminal, a file, or whatever!
 
 	# ... keep receiving "get_data" until the server finish sending
 
 	# receive a "get" event
 	#	args is: $code, $reply, "/myfile.txt"
+
+	# at this point the transfer is complete
 
 	# if at any point there is an error, a "get_error" event is sent
 	#	args is: $code, $reply, "/myfile.txt"
@@ -1583,20 +1587,22 @@ For the "upload" events where you are sending data to the server, the flow is:
 	#	args is: "/myfile"
 
 	# at this point you should get the data to send to the server
-	# either from your local filesystem, from RAM, or from a database server, whatever!
+	# from your local filesystem, from a database server, or whatever!
 
-	# get a chunk of data to send to the server
+	# send a chunk of data to the server
+	# the chunk size should depend on your application - a reasonable default is 10240 bytes
 	$ftp->yield( 'put_data', $chunk );
 
 	# receive a "put_flushed" event
 	#	args is: "/myfile"
 
-	# at this point, you can either send more chunks ( put_data )
-	# or, signal EOF
+	# at this point, you can either send another chunk or signal EOF
 	$ftp->yield( 'put_close' );
 
 	# receive a "put" event
 	#	args is: $code, $reply, "/myfile"
+
+	# at this point the transfer is complete
 
 	# if at any point there is an error, a "put_error" event is sent
 	#	args is: $code, $reply, "/myfile"
