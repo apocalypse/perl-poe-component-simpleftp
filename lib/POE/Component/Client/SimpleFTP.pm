@@ -1003,8 +1003,6 @@ event data_sf_connected => sub {
 	# kill the timeout timer
 	$poe_kernel->delay( 'timeout_event' );
 
-	# TODO prevent attacks by verifying that the connected IP actually is the same IP as the server we're connecting to?
-
 	# args for the RW wheel
 	my %rw_args = (
 		Handle	=> $fh,
@@ -1014,7 +1012,6 @@ event data_sf_connected => sub {
 		FlushedEvent	=> 'data_rw_flushed',
 	);
 	if ( $self->command_data->{'cmd'} =~ /^(?:ls|dir|list|nlst)$/ ) {
-		# TODO use POE::Filter::Ls or whatever?
 		$rw_args{'Filter'} = POE::Filter::Line->new( InputLiteral => EOL );
 	} else {
 		$rw_args{'Filter'} = POE::Filter::Stream->new;
@@ -1241,7 +1238,7 @@ sub _ftpd_rename_start {
 	my( $self, $code, $reply ) = @_;
 
 	if ( code_intermediate( $code ) ) {
-		# TODO should we send a rename_partial event?
+		# TODO should we send a rename_partial event? I think it's superfluous...
 		$self->command( 'rename_done', 'RNTO', $self->command_data->{'to'} );
 	} else {
 		$self->tell_master( 'rename_error', $code, $reply, $self->command_data->{'from'}, $self->command_data->{'to'} );
@@ -1687,6 +1684,7 @@ can be done in user-space but should be implemented here to make it "simpler" :)
 	* support for "mkdir -p" where this module automatically creates all directories needed
 	* passing a filename/filehandle/whatever to put/get so this module automatically does the reading/writing
 	* directory mirroring ( ala rsync )
+	* use POE::Filter::Ls for parsing ( need to improve it first hah )
 
 =head2 RFC 959 "FILE TRANSFER PROTOCOL (FTP)"
 
