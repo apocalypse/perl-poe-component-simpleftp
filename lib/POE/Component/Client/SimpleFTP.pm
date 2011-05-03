@@ -1007,6 +1007,9 @@ sub create_data_connection {
 event data_sf_connected => sub {
 	my( $self, $fh, $host, $port, $wheel_id ) = @_;
 
+	# TODO what if we get multiple connections?
+	# probably can happen if an attacker attacks us while we use active PORT connection
+
 	warn "data_sf_connected\n" if DEBUG;
 
 	# all done with the SF wheel
