@@ -1,7 +1,7 @@
 #!/usr/bin/perl
-package FEATClient;
+package LsClient;
 
-# a simple client to list the features a ftpd supports
+# a simple client to list a directory
 
 #sub POE::Component::Client::SimpleFTP::DEBUG () { 1 };
 
@@ -42,6 +42,24 @@ has password => (
 	required => 1,
 );
 
+has path => (
+	isa => 'Str',
+	is => 'ro',
+	default => '/',
+);
+
+has passive => (
+	isa => 'Bool',
+	is => 'ro',
+	default => 1,
+);
+
+has local_addr => (
+	isa => 'Str',
+	is => 'ro',
+	default => '0.0.0.0',
+);
+
 # our ftp object
 has ftp => (
 	traits => ['NoGetopt'],
@@ -57,8 +75,10 @@ sub START {
 	$self->ftp( POE::Component::Client::SimpleFTP->new(
 		remote_addr => $self->hostname,
 		remote_port => $self->port,
+		local_addr => $self->local_addr,
 		username => $self->username,
 		password => $self->password,
+		( $self->passive ? ( connection_mode => 'passive' ) : ( connection_mode => 'active' ) ),
 		( $self->usetls ? ( tls_cmd => 1, tls_data => 1 ) : () ),
 	) );
 
@@ -95,30 +115,45 @@ event login_error => sub {
 event authenticated => sub {
 	my $self = shift;
 
-	# Okay, get the feature list
-	$self->ftp->yield( 'features' );
+	# Okay, get the list!
+	$self->ftp->yield( 'ls', $self->path );
 
 	return;
 };
 
-event features_error => sub {
-	my( $self, $code, $reply ) = @_;
+event ls_error => sub {
+	my( $self, $code, $reply, $path ) = @_;
 
-	die "FEAT error: $code $reply";
+	die "ls error: $code $reply";
 
 	return;
 };
 
-event features => sub {
-	my( $self, $code, $reply ) = @_;
+event ls_connected => sub {
+	my( $self, $path ) = @_;
 
-	# done with the feature request
-	print "$reply\n";
+	# do nothing hah
+
+	return;
+};
+
+event ls_data => sub {
+	my( $self, $input ) = @_;
+
+	print "$input\n";
+
+	return;
+};
+
+event ls => sub {
+	my( $self, $code, $reply, $path ) = @_;
+
+	# done with the listing, we disconnect
 	$self->ftp->yield( 'quit' );
 
 	return;
 };
 
 # run the client!
-my $ftp = FEATClient->new_with_options;
+my $ftp = LsClient->new_with_options;
 POE::Kernel->run;

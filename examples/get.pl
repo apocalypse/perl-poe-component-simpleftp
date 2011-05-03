@@ -1,11 +1,9 @@
 #!/usr/bin/perl
 package GetClient;
-use strict;
-use warnings;
 
 # a simple client to get a file
 
-sub POE::Component::Client::SimpleFTP::DEBUG () { 1 };
+#sub POE::Component::Client::SimpleFTP::DEBUG () { 1 };
 
 use MooseX::POE::SweetArgs;
 use POE::Component::Client::SimpleFTP;

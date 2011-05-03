@@ -772,21 +772,26 @@ sub _ftpd_idle {
 	die "unexpected text while we are idle: $code $reply";
 }
 
-# should be the first line of text we received from the ftpd
+# the first line of text we received from the ftpd ( the greeting )
 sub _ftpd_connect {
 	my( $self, $code, $reply ) = @_;
 
-	# TODO should we parse the code for failure replies?
+	if ( code_success( $code ) ) {
+		$self->tell_master( 'connected', $code, $reply );
 
-	$self->tell_master( 'connected', $code, $reply );
-
-	# do we want TLS?
-	if ( $self->tls_cmd ) {
-		# begin TLS authentication procedure, as per RFC 2228 / 4217
-		$self->command( 'tls_cmd', 'AUTH', 'TLS' );
+		# do we want TLS?
+		if ( $self->tls_cmd ) {
+			# begin TLS authentication procedure, as per RFC 2228 / 4217
+			$self->command( 'tls_cmd', 'AUTH', 'TLS' );
+		} else {
+			# send the username!
+			$self->command( 'user', 'USER', $self->username );
+		}
 	} else {
-		# send the username!
-		$self->command( 'user', 'USER', $self->username );
+		$self->tell_master( 'connect_error', $code, $reply );
+
+		# nothing else to do...
+		$self->_shutdown;
 	}
 }
 
@@ -1559,6 +1564,8 @@ An alias for L</opts>
 
 This class of commands is called complex because they require opening a new data connection to the server. The requested data is transferred
 over this connection, and the result is sent back to your session. All of the commands behave the same except for the "upload" types.
+
+Please look at the C<examples> directory included in this distribution for code samples.
 
 The typical flow of this command is as follows:
 
