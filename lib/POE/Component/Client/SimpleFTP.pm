@@ -493,6 +493,7 @@ foreach my $cmd ( qw( put stor stou ) ) {
 				if ( defined $self->data_rw ) {
 					$self->data_rw->put( $input );
 				} else {
+					# TODO maybe we shouldn't die here? Just warn and let the user handle the error?
 					die "got ${cmd}_data when we are not connected!";
 				}
 			} else {
@@ -617,12 +618,12 @@ sub _shutdown {
 	$poe_kernel->alias_remove( $self->alias );
 }
 
-=func yield
+=method yield
 
 This method provides an alternative object based means of posting events to the component.
 First argument is the event to post, following arguments are sent as arguments to the resultant post.
 
-	my $ftp = POE::Component::Client::SimpleFTP->new( ... );
+	my $ftp = POE::Component::Client::SimpleFTP->new( alias => "ftp", ... );
 	$ftp->yield( 'cd', 'foobar' );
 
 	# equivalent to:
@@ -820,7 +821,7 @@ sub _ftpd_tls_cmd {
 
 	if ( code_success( $code ) ) {
 		# Okay, time to SSLify the connection!
-		my $socket = $self->cmd_rw->get_input_handle();
+		my $socket = $self->cmd_rw->get_input_handle;
 		$self->cmd_rw( undef );
 
 		eval { $socket = POE::Component::SSLify::Client_SSLify( $socket, 'tlsv1' ) };
