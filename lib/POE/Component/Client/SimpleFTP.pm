@@ -775,7 +775,7 @@ event cmd_rw_input => sub {
 		if ( exists $self->command_data->{'cmd_pending'} ) {
 			# ftpd sent data faster than we could get the command!
 			warn "executing pending command data\n" if DEBUG;
-			my $subref = '_ftpd_complex_done';
+			$subref = '_ftpd_complex_done';
 		} else {
 			warn "buffering command data\n" if DEBUG;
 			$self->command_data->{'cmd_buffer'} = [$code, $line];
