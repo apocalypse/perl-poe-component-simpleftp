@@ -761,6 +761,19 @@ event cmd_rw_input => sub {
 
 	# process the input, depending on our state
 	my $subref = "_ftpd_" . $self->state;
+	if ( $self->state eq 'complex_data' ) {
+		# okay, we got input from the ftpd before the complex data is closed, so we buffer it...
+		if ( exists $self->command_data->{'cmd_pending'} ) {
+			# ftpd sent data faster than we could get the command!
+			warn "executing pending command data\n" if DEBUG;
+			my $subref = '_ftpd_complex_done';
+		} else {
+			warn "buffering command data\n" if DEBUG;
+			$self->command_data->{'cmd_buffer'} = [$code, $line];
+			return;
+		}
+	}
+
 	warn "calling $subref to process $code:$line\n" if DEBUG;
 	$self->$subref( $code, $line );
 
@@ -1163,8 +1176,6 @@ sub _ftpd_complex_done {
 	# clear all data for this complex command
 	$self->state( 'idle' );
 	$self->command_data( undef );
-
-	# TODO maybe we got the complex reply *before* the RW is closed?
 }
 
 sub _process_complex_error {
@@ -1188,6 +1199,12 @@ sub _process_complex_closed {
 	# Okay, we are done with this command!
 	$self->state( 'complex_done' );
 	$self->data_rw( undef );
+
+	# Did we buffer any commands?
+	if ( exists $self->command_data->{'cmd_buffer'} ) {
+		warn "executing buffered command reply\n" if DEBUG;
+		$self->_ftpd_complex_done( @{ delete $self->command_data->{'cmd_buffer'} } );
+	}
 
 	# TODO should we send an event_closed command? I think it's superfluous...
 }
@@ -1223,7 +1240,10 @@ event data_rw_error => sub {
 	warn "data_rw_error: $operation $errnum $errstr\n" if DEBUG;
 
 	# should only happen in complex state
-	if ( $self->state eq 'complex_data' ) {
+	if ( $self->state eq 'complex_start' ) {
+		# woah, sent the data faster than we started!
+		$self->command_data->{'cmd_pending'} = 1;
+	} elsif ( $self->state eq 'complex_data' ) {
 		# Is it a normal EOF or an error?
 		if ( $operation eq "read" and $errnum == 0 ) {
 			# only in the put state is this a real error
