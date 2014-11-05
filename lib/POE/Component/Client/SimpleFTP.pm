@@ -739,7 +739,7 @@ event cmd_rw_input => sub {
 					die "ftpd sent invalid reply: $input";
 				} else {
 					warn "end of multi-line: '$string'\n" if DEBUG;
-					$line = $self->input_buffer . "\n" . $input;
+					$line = $self->input_buffer . "\n" . $string;
 					$self->input_buffer( undef );
 				}
 			} else {
