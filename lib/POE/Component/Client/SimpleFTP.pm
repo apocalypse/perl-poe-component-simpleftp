@@ -712,11 +712,12 @@ event cmd_rw_input => sub {
 	warn "cmd_rw_input(" . $self->state . "): '$input'\n" if DEBUG;
 
 	# some ftpds are zany!
-	#calling _ftpd_simple_command to process 221:Goodbye.
-	#shutdown
-	#switching from state(simple_command) to state(shutdown)
-	#cmd_rw_input(shutdown): '500 OOPS: priv_sock_get_cmd'
-	#calling _ftpd_shutdown to process 500:OOPS: priv_sock_get_cmd
+#calling _ftpd_simple_command to process 221:Goodbye.
+#shutdown
+#switching from state(simple_command) to state(shutdown)
+#cmd_rw_input(shutdown): '500 OOPS: priv_sock_get_cmd'
+#calling _ftpd_shutdown to process 500:OOPS: priv_sock_get_cmd
+#Can't locate object method "_ftpd_shutdown" via package "POE::Component::Client::SimpleFTP" at /usr/local/share/perl/5.18.2/POE/Component/Client/SimpleFTP.pm line 790.
 	return if $self->state eq 'shutdown';
 
 	# parse the input according to RFC 959
@@ -1156,6 +1157,12 @@ sub _ftpd_complex_start {
 				$self->_send_master( $self->command_data->{'cmd'} . '_data', $chunk, @{ $self->command_data->{'data'} } );
 			}
 			delete $self->command_data->{'buffer'};
+
+			# check for server sending faster than we can process
+			if ( exists $self->command_data->{'cmd_pending'} ) {
+				warn "fixing pending command data\n" if DEBUG;
+				$self->state( 'complex_done' );
+			}
 		}
 	} elsif ( code_success( $code ) ) {
 		die "unexpected success for start of complex command: $code $reply";
