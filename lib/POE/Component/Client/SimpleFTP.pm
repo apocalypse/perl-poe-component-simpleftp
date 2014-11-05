@@ -890,7 +890,11 @@ sub _ftpd_prot {
 	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
-		$self->_send_master( 'authenticated' );
+		my $banner = $reply;
+		if ( exists $self->command_data->{'orig_banner'} ) {
+			$banner = (delete $self->command_data->{'orig_banner'}) . "\n" . $reply;
+		}
+		$self->_send_master( 'authenticated', $banner );
 	} else {
 		$self->_send_master( 'login_error', $code, $reply );
 	}
@@ -903,7 +907,7 @@ sub _ftpd_user {
 
 	if ( code_success( $code ) ) {
 		# no need for password ( probably anonymous account )
-		$self->_prepare_tls_stuff;
+		$self->_prepare_tls_stuff( $reply );
 	} elsif ( code_intermediate( $code ) ) {
 		# send the password!
 		$self->command( 'password', 'PASS', $self->password );
@@ -914,14 +918,17 @@ sub _ftpd_user {
 }
 
 sub _prepare_tls_stuff {
-	my $self = shift;
+	my( $self, $reply ) = @_;
 
 	# do we need to setup the data channel TLS stuff?
 	if ( $self->tls_data ) {
+		# cache the original reply
+		$self->command_data->{'orig_banner'} = $reply;
+
 		# TODO is 0 a good default?
 		$self->command( 'pbsz', 'PBSZ', 0 );
 	} else {
-		$self->_send_master( 'authenticated' );
+		$self->_send_master( 'authenticated', $reply );
 		$self->state( 'idle' );
 	}
 }
@@ -930,7 +937,7 @@ sub _ftpd_password {
 	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
-		$self->_prepare_tls_stuff;
+		$self->_prepare_tls_stuff( $reply );
 	} else {
 		$self->_send_master( 'login_error', $code, $reply );
 		$self->state( 'idle' );
@@ -1369,7 +1376,7 @@ The following events may be sent to your session:
 
 This event is sent when the entire login procedure is done. At this point you can send commands to the server.
 
-No arguments.
+The first argument is the string banner that the server sent, if any.
 
 =head3 connect_error
 
