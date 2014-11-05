@@ -1,14 +1,13 @@
-Revision history for Perl module {{$dist->name}}
+Revision history for {{$dist->name}}
 
 {{$NEXT}}
+	Updates to the automatically-generated files
 
-0.003
-	Released: 2011-05-04 21:39:47 UTC
+0.003	2011-05-04 21:39:47 UTC
 
 	Minor pod tweaks
 
-0.002
-	Released: 2011-05-03 20:10:11 UTC
+0.002	2011-05-03 20:10:11 UTC
 
 	Add missing documentation for the rmdir command
 	Add mdtm_parser to ::Utils for the MDTM command
@@ -17,7 +16,6 @@ Revision history for Perl module {{$dist->name}}
 	Improve the pod for commands with sample data
 	Fix multi-line parsing logic so it correctly includes the first/last lines of the reply
 
-0.001
-	Released: 2011-05-03 06:13:35 UTC
+0.001	2011-05-03 06:13:35 UTC
 
 	initial release
