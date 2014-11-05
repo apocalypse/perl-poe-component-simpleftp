@@ -5,6 +5,7 @@ Revision history for {{$dist->name}}
 	Fix the handling of multi-line replies in exceptional circumstances
 	Renamed public methods to private methods (should have been private in the first place!)
 	Add the login banner to the authenticated event
+	Fix the connected event so it only gets the banner not the code
 
 0.003	2011-05-04 21:39:47 UTC
 

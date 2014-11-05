@@ -89,8 +89,8 @@ sub START {
 event _child => sub { return };
 
 event connected => sub {
-	my $self = shift;
-
+	my( $self, $banner ) = @_;
+warn "GOT CONNECT: $banner";
 	# do nothing hah
 
 	return;
@@ -113,7 +113,9 @@ event login_error => sub {
 };
 
 event authenticated => sub {
-	my $self = shift;
+	my( $self, $banner ) = @_;
+
+warn "GOT AUTH: $banner";
 
 	# Okay, get the list!
 	$self->ftp->yield( 'ls', $self->path );

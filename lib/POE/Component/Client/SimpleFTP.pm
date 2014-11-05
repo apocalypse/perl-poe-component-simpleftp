@@ -826,7 +826,7 @@ sub _ftpd_connect {
 	my( $self, $code, $reply ) = @_;
 
 	if ( code_success( $code ) ) {
-		$self->_send_master( 'connected', $code, $reply );
+		$self->_send_master( 'connected', $reply );
 
 		# do we want TLS?
 		if ( $self->tls_cmd ) {
@@ -1371,6 +1371,13 @@ provided credentials. Additionally, it will enable TLS mode if you enabled the a
 on the initial connection that you can tweak via setting L</timeout>.
 
 The following events may be sent to your session:
+
+=head3 connected
+
+This event is sent when the initial connection to the server is established. The connection is not yet finalized, so you aren't able to send
+commands yet!
+
+The first argument is the string banner that the server sent, if any.
 
 =head3 authenticated
 
