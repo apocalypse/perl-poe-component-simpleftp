@@ -720,13 +720,13 @@ event cmd_rw_input => sub {
 		$string =~ s/^\s+//;
 		$string =~ s/\s+$//;
 
+		# handle multi-line replies
 		if ( length $minus ) {
-			# begin of multi-line reply
-			warn "begin of multi-line($code): '$string'\n" if DEBUG;
 			if ( defined $self->input_buffer ) {
 				die "ftpd sent different multi-line codes!" if $self->input_buffer_code ne $code;
 				$self->input_buffer( $self->input_buffer . "\n" . $string );
                         } else {
+				warn "begin of multi-line($code): '$string'\n" if DEBUG;
 				$self->input_buffer( $string );
                         }
 			$self->input_buffer_code( $code );
