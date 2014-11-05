@@ -711,6 +711,14 @@ event cmd_rw_input => sub {
 
 	warn "cmd_rw_input(" . $self->state . "): '$input'\n" if DEBUG;
 
+	# some ftpds are zany!
+	#calling _ftpd_simple_command to process 221:Goodbye.
+	#shutdown
+	#switching from state(simple_command) to state(shutdown)
+	#cmd_rw_input(shutdown): '500 OOPS: priv_sock_get_cmd'
+	#calling _ftpd_shutdown to process 500:OOPS: priv_sock_get_cmd
+	return if $self->state eq 'shutdown';
+
 	# parse the input according to RFC 959
 	# TODO put this code in POE::Filter::FTP or something?
 	my( $code, $line );
